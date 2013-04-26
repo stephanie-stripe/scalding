@@ -47,6 +47,8 @@ import org.apache.commons.lang.StringEscapeUtils
 import collection.mutable.{Buffer, MutableList}
 import scala.collection.JavaConverters._
 
+import parquet.cascading.ParquetTupleScheme
+
 /**
 * This is a base class for File-based sources
 */
@@ -227,6 +229,10 @@ trait LocalTapSource extends FileSource {
 abstract class FixedPathSource(path : String*) extends FileSource {
   def localPath = { assert(path.size == 1); path(0) }
   def hdfsPaths = path.toList
+}
+
+case class Parquet(p : String, val fields : Fields = Fields.ALL) extends FixedPathSource(p) with LocalTapSource {
+  override def hdfsScheme = HadoopSchemeInstance(new ParquetTupleScheme(fields))
 }
 
 /**

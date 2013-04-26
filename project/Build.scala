@@ -26,6 +26,7 @@ object ScaldingBuild extends Build {
     ),
 
     resolvers ++= Seq(
+      "Local Maven Repository" at "file:///"+Path.userHome+"/.m2/repository",
       "snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
       "releases"  at "http://oss.sonatype.org/content/repositories/releases",
       "Concurrent Maven Repo" at "http://conjars.org/repo"
@@ -36,7 +37,7 @@ object ScaldingBuild extends Build {
     scalacOptions ++= Seq("-unchecked", "-deprecation"),
 
     // Uncomment if you don't want to run all the tests before building assembly
-    // test in assembly := {},
+     test in assembly := {},
 
     // Publishing options:
 
@@ -67,6 +68,10 @@ object ScaldingBuild extends Build {
         case s if s.endsWith(".class") => MergeStrategy.last
         case s if s.endsWith("project.clj") => MergeStrategy.concat
         case s if s.endsWith(".html") => MergeStrategy.last
+        case s if s.endsWith(".xml") => MergeStrategy.last
+        case s if s.endsWith(".dtd") => MergeStrategy.last
+        case s if s.endsWith(".xsd") => MergeStrategy.last
+        case s if s.endsWith(".properties") => MergeStrategy.last
         case x => old(x)
       }
     },
@@ -150,6 +155,7 @@ object ScaldingBuild extends Build {
       "com.twitter" % "maple" % "0.2.5",
       "com.twitter" %% "chill" % "0.2.0",
       "com.twitter" %% "algebird-core" % "0.1.12",
+      "com.twitter" % "parquet-cascading" % "1.0.0-SNAPSHOT" changing,
       "commons-lang" % "commons-lang" % "2.4",
       "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.1.3",
       "org.apache.hadoop" % "hadoop-core" % "0.20.2" % "provided",
