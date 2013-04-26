@@ -29,7 +29,8 @@ object ScaldingBuild extends Build {
       "Local Maven Repository" at "file:///"+Path.userHome+"/.m2/repository",
       "snapshots" at "http://oss.sonatype.org/content/repositories/snapshots",
       "releases"  at "http://oss.sonatype.org/content/repositories/releases",
-      "Concurrent Maven Repo" at "http://conjars.org/repo"
+      "Concurrent Maven Repo" at "http://conjars.org/repo",
+      "cloudera-releases" at "https://repository.cloudera.com/artifactory/cloudera-repos"
     ),
 
     parallelExecution in Test := false,
@@ -138,7 +139,7 @@ object ScaldingBuild extends Build {
     libraryDependencies += "com.joestelmach" % "natty" % "0.7"
   )
 
-  lazy val cascadingVersion = System.getenv.asScala.getOrElse("SCALDING_CASCADING_VERSION", "2.1.5")
+  lazy val cascadingVersion = "2.0.1-cdh4.1.0"
 
   lazy val scaldingCore = Project(
     id = "scalding-core",
@@ -148,6 +149,7 @@ object ScaldingBuild extends Build {
     name := "scalding-core",
     previousArtifact := Some("com.twitter" % "scalding-core_2.9.2" % "0.8.4"),
     libraryDependencies ++= Seq(
+      "commons-daemon" % "commons-daemon" % "1.0.5",
       "cascading" % "cascading-core" % cascadingVersion,
       "cascading" % "cascading-local" % cascadingVersion,
       "cascading" % "cascading-hadoop" % cascadingVersion,
@@ -158,9 +160,9 @@ object ScaldingBuild extends Build {
       "com.twitter" % "parquet-cascading" % "1.0.0-SNAPSHOT" changing,
       "commons-lang" % "commons-lang" % "2.4",
       "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.1.3",
-      "org.apache.hadoop" % "hadoop-core" % "0.20.2" % "provided",
       "org.slf4j" % "slf4j-api" % "1.6.6",
-      "org.slf4j" % "slf4j-log4j12" % "1.6.6" % "provided"
+      "io.backchat.jerkson" %% "jerkson" % "0.7.0",
+      "org.slf4j" % "slf4j-log4j12" % "1.6.6"
     )
   ).dependsOn(scaldingArgs, scaldingDate)
 }
