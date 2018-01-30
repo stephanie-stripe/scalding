@@ -21,6 +21,7 @@ val avroVersion = "1.7.4"
 val bijectionVersion = "0.9.5"
 val cascadingAvroVersion = "2.1.2"
 val chillVersion = "0.8.4"
+val dagonVersion = "0.2.2"
 val elephantbirdVersion = "4.15"
 val hadoopLzoVersion = "0.4.19"
 val hadoopVersion = "2.6.0"
@@ -47,9 +48,9 @@ val printDependencyClasspath = taskKey[Unit]("Prints location of the dependencie
 val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
   organization := "com.twitter",
 
-  scalaVersion := "2.11.8",
+  scalaVersion := "2.11.11",
 
-  crossScalaVersions := Seq(scalaVersion.value, "2.12.1"),
+  crossScalaVersions := Seq(scalaVersion.value, "2.12.3"),
 
   ScalariformKeys.preferences := formattingPreferences,
 
@@ -57,7 +58,9 @@ val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
 
   javacOptions in doc := Seq("-source", "1.6"),
 
-  wartremoverErrors in (Compile, compile) += Wart.OptionPartial,
+  wartremoverErrors in (Compile, compile) ++= Seq(
+    Wart.OptionPartial, Wart.ExplicitImplicitTypes, Wart.LeakingSealed,
+    Wart.Return, Wart.EitherProjectionPartial),
 
   libraryDependencies ++= Seq(
     "org.mockito" % "mockito-all" % "1.8.5" % "test",
@@ -216,6 +219,7 @@ lazy val scalding = Project(
  .aggregate(
   scaldingArgs,
   scaldingDate,
+  scaldingQuotation,
   scaldingCore,
   scaldingCommons,
   scaldingAvro,
@@ -244,6 +248,7 @@ lazy val scaldingAssembly = Project(
  .aggregate(
   scaldingArgs,
   scaldingDate,
+  scaldingQuotation,
   scaldingCore,
   scaldingCommons,
   scaldingAvro,
@@ -300,8 +305,6 @@ lazy val scaldingArgs = module("args")
 
 lazy val scaldingDate = module("date")
 
-lazy val scaldingGraph = module("graph")
-
 lazy val cascadingVersion =
   System.getenv.asScala.getOrElse("SCALDING_CASCADING_VERSION", "3.2.1")
 
@@ -318,11 +321,19 @@ lazy val scaldingBenchmarks = module("benchmarks")
     parallelExecution in Test := false
   ).dependsOn(scaldingCore)
 
+lazy val scaldingQuotation = module("quotation").settings(
+  libraryDependencies ++= Seq(
+    "org.scala-lang" % "scala-reflect" % scalaVersion.value % "provided",
+    "org.scala-lang" % "scala-compiler" % scalaVersion.value % "provided"
+  )
+)
+
 lazy val scaldingCore = module("core").settings(
   libraryDependencies ++= Seq(
     "cascading" % "cascading-core" % cascadingVersion,
     "cascading" % "cascading-hadoop" % cascadingVersion,
     "cascading" % "cascading-local" % cascadingVersion,
+    "com.stripe" %% "dagon-core" % dagonVersion,
     "com.twitter" % "chill-hadoop" % chillVersion,
     "com.twitter" % "chill-java" % chillVersion,
     "com.twitter" %% "chill-bijection" % chillVersion,
@@ -339,7 +350,7 @@ lazy val scaldingCore = module("core").settings(
     "org.slf4j" % "slf4j-api" % slf4jVersion,
     "org.slf4j" % "slf4j-log4j12" % slf4jVersion % "provided"),
   addCompilerPlugin("org.scalamacros" % "paradise" % paradiseVersion cross CrossVersion.full)
-).dependsOn(scaldingArgs, scaldingDate, scaldingSerialization, maple)
+).dependsOn(scaldingArgs, scaldingDate, scaldingSerialization, maple, scaldingQuotation)
 
 lazy val scaldingCommons = module("commons").settings(
   libraryDependencies ++= Seq(
