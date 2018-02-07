@@ -29,6 +29,16 @@ import scala.collection.immutable
 import scala.collection.mutable.{Map => MMap}
 
 object CascadingBackend {
+
+  def areDefiniteInverse[A, B](t: TupleConverter[A], s: TupleSetter[B]): Boolean =
+    (t, s) match {
+      case (TupleConverter.Single(TupleGetter.Casting()), TupleSetter.Single()) => true
+      case (TupleConverter.TupleConverter1(TupleGetter.Casting()), TupleSetter.TupleSetter1()) => true
+      case (TupleConverter.TupleConverter2(TupleGetter.Casting(), TupleGetter.Casting()), TupleSetter.TupleSetter2()) => true
+      // TODO we could add more, but we only use single and 2 actually
+      case _ => false
+    }
+
   import TypedPipe._
 
   private val valueField: Fields = new Fields("value")
@@ -44,7 +54,7 @@ object CascadingBackend {
       case _ => tuple2Converter[K, V]
     }
 
-  private def valueConverter[V](optOrd: Option[Ordering[_ >: V]]): TupleConverter[V] =
+  private def valueConverter[V](optOrd: Option[Ordering[V]]): TupleConverter[V] =
     optOrd.map {
       case _: OrderedSerialization[_] =>
         TupleConverter.singleConverter[Boxed[V]].andThen(_.get)
@@ -106,7 +116,11 @@ object CascadingBackend {
         op(ts, keyF)
     }
 
-  private case class CascadingPipe[+T](pipe: Pipe,
+  // TODO we could probably optimize this further by just composing
+  // the toPipe function directly, so we don't actually create the pipe until
+  // the TupleSetter comes in. With this, we can make sure to use the right
+  // TupleSetter on the final pipe
+   private case class CascadingPipe[+T](pipe: Pipe,
     fields: Fields,
     @transient localFlowDef: FlowDef, // not serializable.
     converter: TupleConverter[_ <: T]) {
@@ -116,11 +130,16 @@ object CascadingBackend {
      * have the structure defined by setter
      */
     def toPipe[U >: T](f: Fields, fd: FlowDef, setter: TupleSetter[U]): Pipe = {
-      // TODO, this may be identity if the setter is the inverse of the
-      // converter. If we can identify this we will save allocations
       val resFd = new RichFlowDef(fd)
       resFd.mergeFrom(localFlowDef)
-      RichPipe(pipe).mapTo[T, U](fields -> f)(t => t)(TupleConverter.asSuperConverter(converter), setter)
+      if (areDefiniteInverse(converter, setter) && (fields == f)) {
+        // we are already in the right format
+        pipe
+      }
+      else {
+        // we need to convert
+        RichPipe(pipe).mapTo[T, U](fields -> f)(t => t)(TupleConverter.asSuperConverter(converter), setter)
+      }
     }
   }
 
@@ -240,9 +259,6 @@ object CascadingBackend {
                 // TODO: a better optimization is to not materialize this
                 // node at all if there is no fan out since groupBy and cogroupby
                 // can accept multiple inputs
-                //
-                // (a ++ a) == a.flatMap { x => List(x, x) } is an optimization we used to
-                // have
 
                 val flowDef = new FlowDef
                 // if all of the converters are the same, we could skip some work
@@ -378,10 +394,20 @@ object CascadingBackend {
    * cases where you want more direct control of the TypedPipe than
    * the default method gives you.
    */
-  final def toPipeUnoptimized[U](p: TypedPipe[U],
+  final def toPipeUnoptimized[U](input: TypedPipe[U],
     fieldNames: Fields)(implicit flowDef: FlowDef, mode: Mode, setter: TupleSetter[U]): Pipe = {
 
     val compiler = cache.get(flowDef, mode)
+
+    /**
+     * These rules are not optimizations, but actually required for Cascading to not
+     * throw. Cascading requires certain shapes of the graphs
+     */
+    val p = OptimizationRules(input,
+      OptimizationRules.DescribeLater
+        .orElse(OptimizationRules.DeferMerge)
+        .orElse(OptimizationRules.DiamondToFlatMap))
+
     val cp: CascadingPipe[U] = compiler(p)
 
     RichPipe(cp.toPipe(fieldNames, flowDef, TupleSetter.asSubSetter(setter)))
@@ -553,7 +579,7 @@ object CascadingBackend {
     def groupOp(gb: GroupBuilder => GroupBuilder): CascadingPipe[_ <: (K, V2)] =
       groupOpWithValueSort(None)(gb)
 
-    def groupOpWithValueSort(valueSort: Option[Ordering[_ >: V1]])(gb: GroupBuilder => GroupBuilder): CascadingPipe[_ <: (K, V2)] = {
+    def groupOpWithValueSort(valueSort: Option[Ordering[V1]])(gb: GroupBuilder => GroupBuilder): CascadingPipe[_ <: (K, V2)] = {
       val flowDef = new FlowDef
       val pipe = maybeBox[K, V1](rs.keyOrdering, flowDef) { (tupleSetter, fields) =>
         val (sortOpt, ts) = valueSort.map {
@@ -585,20 +611,21 @@ object CascadingBackend {
     }
 
     rs match {
-      case IdentityReduce(_, _, None, descriptions) =>
+      case ir@IdentityReduce(_, _, None, descriptions, _) =>
+        type CP[V] = CascadingPipe[_ <: (K, V)]
         // Not doing anything
-        mapped.copy(pipe = RichPipe.setPipeDescriptions(mapped.pipe, descriptions)).asInstanceOf[CascadingPipe[_ <: (K, V2)]]
-      case UnsortedIdentityReduce(_, _, None, descriptions) =>
+        ir.evidence.subst[CP](mapped.copy(pipe = RichPipe.setPipeDescriptions(mapped.pipe, descriptions)))
+      case uir@UnsortedIdentityReduce(_, _, None, descriptions, _) =>
+        type CP[V] = CascadingPipe[_ <: (K, V)]
         // Not doing anything
-        mapped.copy(pipe = RichPipe.setPipeDescriptions(mapped.pipe, descriptions)).asInstanceOf[CascadingPipe[_ <: (K, V2)]]
-      case IdentityReduce(_, _, Some(reds), descriptions) =>
+        uir.evidence.subst[CP](mapped.copy(pipe = RichPipe.setPipeDescriptions(mapped.pipe, descriptions)))
+      case IdentityReduce(_, _, Some(reds), descriptions, _) =>
         groupOp { _.reducers(reds).setDescriptions(descriptions) }
-      case UnsortedIdentityReduce(_, _, Some(reds), descriptions) =>
+      case UnsortedIdentityReduce(_, _, Some(reds), descriptions, _) =>
         // This is weird, but it is sometimes used to force a partition
         groupOp { _.reducers(reds).setDescriptions(descriptions) }
-      case ivsr@IdentityValueSortedReduce(_, _, _, _, _) =>
-        // in this case we know that V1 =:= V2
-        groupOpWithValueSort(Some(ivsr.valueSort.asInstanceOf[Ordering[_ >: V1]])) { gb =>
+      case ivsr@IdentityValueSortedReduce(_, _, _, _, _, _) =>
+        groupOpWithValueSort(Some(ivsr.valueSort)) { gb =>
           // If its an ordered serialization we need to unbox
           val mappedGB =
             if (ivsr.valueSort.isInstanceOf[OrderedSerialization[_]])

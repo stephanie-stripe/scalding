@@ -5,7 +5,7 @@ import cascading.tuple.Fields
 import com.stripe.dagon.{ Dag, Rule }
 import com.twitter.scalding.source.{ TypedText, NullSink }
 import org.apache.hadoop.conf.Configuration
-import com.twitter.scalding.{ Config, ExecutionContext, Local, Hdfs, FlowState, FlowStateMap, IterableSource }
+import com.twitter.scalding.{ Config, ExecutionContext, Local, Hdfs, FlowState, FlowStateMap, IterableSource, TupleConverter }
 import com.twitter.scalding.typed.cascading_backend.CascadingBackend
 import org.scalatest.FunSuite
 import org.scalatest.prop.PropertyChecks
@@ -163,6 +163,7 @@ object TypedPipeGen {
     FilterLocally,
     EmptyIsOftenNoOp,
     EmptyIterableIsEmpty,
+    HashToShuffleCoGroup,
     ForceToDiskBeforeHashJoin)
 
   def genRuleFrom(rs: List[Rule[TypedPipe]]): Gen[Rule[TypedPipe]] =
@@ -240,17 +241,25 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
 
   test("all optimization rules don't change results") {
     import TypedPipeGen.{ genWithIterableSources, genRule }
-    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 500)
+    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 200)
     forAll(genWithIterableSources, genRule)(optimizationLaw[Int] _)
+  }
+
+  test("some past failures of the optimizationLaw") {
+    import TypedPipe._
+
+    val arg01 = (TypedPipe.empty.withDescription("foo") ++ TypedPipe.empty.withDescription("bar")).addTrap(TypedText.tsv[Int]("foo"))
+    optimizationLaw(arg01, Rule.empty)
   }
 
   test("all optimization rules do not increase steps") {
     import TypedPipeGen.{ allRules, genWithIterableSources, genRuleFrom }
-    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 500)
+    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 200)
 
     val possiblyIncreasesSteps: Set[Rule[TypedPipe]] =
       Set(OptimizationRules.AddExplicitForks, // explicit forks can cause cascading to add steps instead of recomputing values
-        OptimizationRules.ForceToDiskBeforeHashJoin // adding a forceToDisk can increase the number of steps
+        OptimizationRules.ForceToDiskBeforeHashJoin, // adding a forceToDisk can increase the number of steps
+        OptimizationRules.HashToShuffleCoGroup // obviously changing a hashjoin to a cogroup can increase steps
         )
 
     val gen = genRuleFrom(allRules.filterNot(possiblyIncreasesSteps))
@@ -413,6 +422,33 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
       eqCheck(tp.groupRandomly(100))
       val ordInt = implicitly[Ordering[Int]]
       eqCheck(tp.distinctBy(fn0)(ordInt))
+    }
+  }
+
+  test("Dagon relies on fast hashCodes. Test some example ones to make sure they are not exponential") {
+
+    @annotation.tailrec
+    def fib[A](t0: TypedPipe[A], t1: TypedPipe[A], n: Int)(fn: (TypedPipe[A], TypedPipe[A]) => TypedPipe[A]): TypedPipe[A] =
+      if (n <= 0) t0
+      else if (n == 1) t1
+      else {
+        val t2 = fn(t0, t1)
+        fib(t1, t2, n - 1)(fn)
+      }
+
+    def testFib(fn: (TypedPipe[Int], TypedPipe[Int]) => TypedPipe[Int]) = {
+      val start = System.currentTimeMillis
+      fib(TypedPipe.from(List(0)), TypedPipe.from(List(1, 2)), 45)(fn).hashCode
+      val end = System.currentTimeMillis
+      // for exponential complexity this will fail
+      assert(end - start < 1000)
+    }
+
+    // Test the ways we can combine pipes
+    testFib(_ ++ _)
+    testFib(_.cross(_).map { case (a, b) => a * b })
+    testFib { (left, right) =>
+      left.asKeys.join(right.asKeys).keys
     }
   }
 }
