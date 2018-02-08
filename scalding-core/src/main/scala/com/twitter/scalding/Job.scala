@@ -15,11 +15,13 @@ limitations under the License.
 */
 package com.twitter.scalding
 
-import com.twitter.algebird.Semigroup
 import cascading.flow.{ Flow, FlowDef, FlowListener, FlowStep, FlowStepListener, FlowSkipStrategy, FlowStepStrategy }
 import cascading.pipe.Pipe
 import cascading.property.AppProps
 import cascading.stats.CascadingStats
+
+import com.twitter.algebird.Semigroup
+import com.twitter.scalding.typed.cascading_backend.CascadingBackend
 
 import org.apache.hadoop.io.serializer.{ Serialization => HSerialization }
 
@@ -251,6 +253,7 @@ class Job(val args: Args) extends FieldConversions with java.io.Serializable {
   // called before run
   // only override if you do not use flowDef
   def validate(): Unit = {
+    CascadingBackend.planTypedWrites(flowDef, mode)
     FlowStateMap.validateSources(flowDef, mode)
   }
 
