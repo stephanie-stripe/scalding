@@ -146,9 +146,11 @@ val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
     pushChanges),
 
   publishTo := Some(
-      if (version.value.trim.endsWith("SNAPSHOT"))
-        Opts.resolver.sonatypeSnapshots
-      else Opts.resolver.sonatypeStaging
+      if (version.value.trim.endsWith("SNAPSHOT")) {
+        sys.props.get("snapshots.url").map("snapshots" at _).getOrElse(Opts.resolver.sonatypeSnapshots)
+      } else {
+        sys.props.get("releases.url").map("releases" at _).getOrElse(Opts.resolver.sonatypeStaging)
+      }
     ),
 
   // Janino includes a broken signature, and is not needed:
