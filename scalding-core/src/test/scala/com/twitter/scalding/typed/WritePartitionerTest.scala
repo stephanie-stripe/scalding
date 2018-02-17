@@ -57,7 +57,7 @@ class WritePartitionerTest extends FunSuite with PropertyChecks {
       }
   }
 
-  test("When we break at forks we have at most 1 + hashJoin steps") {
+  test("When we break at forks we have at most 2 + hashJoin steps") {
     implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 100)
 
     def afterPartitioningEachStepIsSize1[T](init: TypedPipe[T]) = {
@@ -69,15 +69,15 @@ class WritePartitionerTest extends FunSuite with PropertyChecks {
         case (tp, _) =>
           val (dag, _) = Dag(tp, OptimizationRules.toLiteral)
           val hcg = dag.allNodes.collect { case h: TypedPipe.HashCoGroup[_, _, _, _] => 1 }.sum
-          // we can have at most 1 + hcg jobs
-          assert(TypedPipeGen.steps(tp) <= 1 + hcg, s"optimized: ${tp.toString}")
+          // we can have at most 2 + hcg jobs
+          assert(TypedPipeGen.steps(tp) <= 2 + hcg, s"optimized: ${tp.toString}")
       }
       writes.materializations.foreach {
         case (tp, _) =>
           val (dag, _) = Dag(tp, OptimizationRules.toLiteral)
           val hcg = dag.allNodes.collect { case h: TypedPipe.HashCoGroup[_, _, _, _] => 1 }.sum
           // we can have at most 1 + hcg jobs
-          assert(TypedPipeGen.steps(tp) <= 1 + hcg, s"optimized: ${tp.toString}")
+          assert(TypedPipeGen.steps(tp) <= 2 + hcg, s"optimized: ${tp.toString}")
       }
     }
 
