@@ -21,8 +21,9 @@ import com.twitter.scalding.typed.functions.{ Constant, EmptyGuard, EqTypes, Fil
 import com.twitter.scalding.typed.functions.ComposedFunctions.ComposedMapGroup
 import scala.collection.JavaConverters._
 import scala.util.hashing.MurmurHash3
+import java.io.Serializable
 
-object CoGroupable {
+object CoGroupable extends Serializable {
   /*
    * This is the default empty join function needed for CoGroupable and HashJoinable
    */
@@ -77,7 +78,7 @@ object CoGroupable {
 /**
  * Represents something than can be CoGrouped with another CoGroupable
  */
-sealed trait CoGroupable[K, +R] extends HasReducers with HasDescription with java.io.Serializable {
+sealed trait CoGroupable[K, +R] extends HasReducers with HasDescription with Serializable {
   /**
    * This is the list of mapped pipes, just before the (reducing) joinFunction is applied
    */
@@ -118,7 +119,7 @@ sealed trait CoGroupable[K, +R] extends HasReducers with HasDescription with jav
   // TODO: implement blockJoin
 }
 
-object CoGrouped {
+object CoGrouped extends Serializable {
   // distinct by mapped, but don't reorder if the list is unique
   final def distinctBy[T, U](list: List[T])(fn: T => U): List[T] = {
     @annotation.tailrec
@@ -217,7 +218,7 @@ object CoGrouped {
   }
 
   final case class FilterKeys[K, V](on: CoGrouped[K, V], fn: K => Boolean) extends CoGrouped[K, V] {
-    val inputs = on.inputs.map(_.filterKeys(fn))
+    val inputs = on.inputs.map(TypedPipe.FilterKeys(_, fn))
     def reducers = on.reducers
     def keyOrdering = on.keyOrdering
     def joinFunction = on.joinFunction
@@ -231,6 +232,7 @@ object CoGrouped {
     def keyOrdering = on.keyOrdering
     def joinFunction = {
       val joinF = on.joinFunction // don't capture on inside the closure
+      val guardedFn = Grouped.addEmptyGuard(fn)
 
       { (k: K, leftMost: Iterator[Any], joins: Seq[Iterable[Any]]) =>
         val joined = joinF(k, leftMost, joins)
@@ -240,7 +242,7 @@ object CoGrouped {
          *
          * a.join(b).toTypedPipe.group.mapGroup(fn) == a.join(b).mapGroup(fn)
          */
-        Grouped.addEmptyGuard(fn)(k, joined)
+        guardedFn(k, joined)
       }
     }
   }
@@ -250,7 +252,7 @@ sealed trait CoGrouped[K, +R] extends KeyedListLike[K, R, CoGrouped]
   with CoGroupable[K, R]
   with WithReducers[CoGrouped[K, R]]
   with WithDescription[CoGrouped[K, R]]
-  with java.io.Serializable {
+  with Serializable {
 
   override def withReducers(reds: Int): CoGrouped[K, R] =
     CoGrouped.WithReducers(this, reds)
@@ -286,6 +288,25 @@ sealed trait CoGrouped[K, +R] extends KeyedListLike[K, R, CoGrouped]
 sealed trait HashJoinable[K, +V] extends CoGroupable[K, V] with KeyedPipe[K] {
   /** A HashJoinable has a single input into to the cogroup */
   override def inputs = List(mapped)
+}
+
+object HashJoinable extends Serializable {
+  def toReduceStep[A, B](hj: HashJoinable[A, B]): ReduceStep[A, _, _ <: B] =
+    hj match {
+      case step@IdentityReduce(_, _, _, _, _) => step
+      case step@UnsortedIdentityReduce(_, _, _, _, _) => step
+      case step@IteratorMappedReduce(_, _, _, _, _) => step
+    }
+
+  def filterKeys[A, B](hj: HashJoinable[A, B], fn: A => Boolean): HashJoinable[A, B] =
+    hj match {
+      case step@IdentityReduce(_, _, _, _, _) =>
+        step.copy(mapped = TypedPipe.FilterKeys(step.mapped, fn))
+      case step@UnsortedIdentityReduce(_, _, _, _, _) =>
+        step.copy(mapped = TypedPipe.FilterKeys(step.mapped, fn))
+      case step@IteratorMappedReduce(_, _, _, _, _) =>
+        step.copy(mapped = TypedPipe.FilterKeys(step.mapped, fn))
+    }
 }
 /**
  * This encodes the rules that
@@ -327,7 +348,7 @@ sealed trait UnsortedGrouped[K, +V]
   with WithReducers[UnsortedGrouped[K, V]]
   with WithDescription[UnsortedGrouped[K, V]]
 
-object Grouped {
+object Grouped extends Serializable {
   def apply[K, V](pipe: TypedPipe[(K, V)])(implicit ordering: Ordering[K]): Grouped[K, V] =
     IdentityReduce[K, V, V](ordering, pipe, None, Nil, implicitly)
 
@@ -374,7 +395,7 @@ sealed trait ReduceStep[K, V1, V2] extends KeyedPipe[K] {
   def toTypedPipe: TypedPipe[(K, V2)] = TypedPipe.ReduceStepPipe(this)
 }
 
-object ReduceStep {
+object ReduceStep extends Serializable {
   def setInput[A, B, C](rs: ReduceStep[A, B, C], input: TypedPipe[(A, B)]): ReduceStep[A, B, C] = {
     type Res[V] = ReduceStep[A, V, C]
     type In[V] = TypedPipe[(A, V)]
@@ -444,6 +465,20 @@ object ReduceStep {
         step.mapGroup(fn)
     }
 
+  def toHashJoinable[A, B, C](rs: ReduceStep[A, B, C]): Option[HashJoinable[A, C]] =
+    rs match {
+      case step @ IdentityReduce(_, _, _, _, _) =>
+        Some(step)
+      case step @ UnsortedIdentityReduce(_, _, _, _, _) =>
+        Some(step)
+      case step @ IteratorMappedReduce(_, _, _, _, _) =>
+        Some(step)
+      case step @ IdentityValueSortedReduce(_, _, _, _, _, _) =>
+        None
+      case step @ ValueSortedReduce(_, _, _, _, _, _) =>
+        None
+    }
+
   def withReducers[A, B, C](rs: ReduceStep[A, B, C], reds: Int): ReduceStep[A, B, C] =
     rs match {
       case step @ IdentityReduce(_, _, _, _, _) =>
@@ -456,6 +491,20 @@ object ReduceStep {
         step.withReducers(reds)
       case step @ IteratorMappedReduce(_, _, _, _, _) =>
         step.withReducers(reds)
+    }
+
+  def withDescription[A, B, C](rs: ReduceStep[A, B, C], descr: String): ReduceStep[A, B, C] =
+    rs match {
+      case step @ IdentityReduce(_, _, _, _, _) =>
+        step.withDescription(descr)
+      case step @ UnsortedIdentityReduce(_, _, _, _, _) =>
+        step.withDescription(descr)
+      case step @ IdentityValueSortedReduce(_, _, _, _, _, _) =>
+        step.withDescription(descr)
+      case step @ ValueSortedReduce(_, _, _, _, _, _) =>
+        step.withDescription(descr)
+      case step @ IteratorMappedReduce(_, _, _, _, _) =>
+        step.withDescription(descr)
     }
 }
 

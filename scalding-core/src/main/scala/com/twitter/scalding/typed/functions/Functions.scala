@@ -2,9 +2,14 @@ package com.twitter.scalding.typed.functions
 
 import com.twitter.algebird.{ Aggregator, Ring, Semigroup, Fold }
 import java.util.Random
+import java.io.Serializable
 
 case class Constant[T](result: T) extends Function1[Any, T] {
   def apply(a: Any) = result
+}
+
+case class ConstantKey[K, V](key: K) extends Function1[V, (K, V)] {
+  def apply(v: V) = (key, v)
 }
 
 case class WithConstant[A, B](constant: B) extends Function1[A, (A, B)] {
@@ -42,7 +47,7 @@ case class Identity[A, B](eqTypes: EqTypes[A, B]) extends Function1[A, B] {
   def apply(a: A) = eqTypes(a)
 }
 
-object Identity {
+object Identity extends Serializable {
   def apply[A](): Identity[A, A] = Identity[A, A](EqTypes.reflexive[A])
 }
 
@@ -214,7 +219,7 @@ case class MapGroupFlatMapValues[A, B, C](fn: B => TraversableOnce[C]) extends F
   def apply(a: A, bs: Iterator[B]) = bs.flatMap(fn)
 }
 
-object FlatMapFunctions {
+object FlatMapFunctions extends Serializable {
   case class FromIdentity[A]() extends Function1[A, Iterator[A]] {
     def apply(a: A) = Iterator.single(a)
   }
@@ -235,7 +240,7 @@ object FlatMapFunctions {
   }
 }
 
-object ComposedFunctions {
+object ComposedFunctions extends Serializable {
 
   case class ComposedMapFn[A, B, C](fn0: A => B, fn1: B => C) extends Function1[A, C] {
     def apply(a: A) = fn1(fn0(a))

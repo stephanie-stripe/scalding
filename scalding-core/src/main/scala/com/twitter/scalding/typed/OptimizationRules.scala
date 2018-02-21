@@ -1,7 +1,7 @@
 package com.twitter.scalding.typed
 
 import com.stripe.dagon.{ FunctionK, Memoize, Rule, PartialRule, Dag, Literal }
-import com.twitter.scalding.typed.functions.{ FlatMapping, FlatMappedFn, FilterKeysToFilter, Fill }
+import com.twitter.scalding.typed.functions.{ FlatMapping, FlatMappedFn, FilterKeysToFilter, FilterGroup, Fill, MapGroupMapValues, MapGroupFlatMapValues }
 import com.twitter.scalding.typed.functions.ComposedFunctions.{ ComposedMapFn, ComposedFilterFn, ComposedOnComplete }
 
 object OptimizationRules {
@@ -153,7 +153,7 @@ object OptimizationRules {
             Unary[TypedPipe, (K, V1), (K, V)](handleCoGrouped(wd.on, recurse), { (tp: TypedPipe[(K, V1)]) =>
               tp match {
                 case ReduceStepPipe(rs) =>
-                  withDescription(rs, desc)
+                  ReduceStepPipe(ReduceStep.withDescription(rs, desc))
                 case CoGroupedPipe(cg) =>
                   CoGroupedPipe(WithDescription(cg, desc))
                 case kvPipe =>
@@ -168,11 +168,13 @@ object OptimizationRules {
             Unary[TypedPipe, (K, V1), (K, V)](handleCoGrouped(fk.on, recurse), { (tp: TypedPipe[(K, V1)]) =>
               tp match {
                 case ReduceStepPipe(rs) =>
-                  filterKeys(rs, fn)
+                  val mapped = rs.mapped
+                  val mappedF = TypedPipe.FilterKeys(mapped, fn)
+                  ReduceStepPipe(ReduceStep.setInput(rs, mappedF))
                 case CoGroupedPipe(cg) =>
                   CoGroupedPipe(FilterKeys(cg, fn))
                 case kvPipe =>
-                  kvPipe.filterKeys(fn)
+                  TypedPipe.FilterKeys(kvPipe, fn)
               }
             })
           }
@@ -203,72 +205,15 @@ object OptimizationRules {
       }
     }
 
-    private def withDescription[K, V1, V2](rs: ReduceStep[K, V1, V2], descr: String): TypedPipe[(K, V2)] =
-      rs match {
-        case step@IdentityReduce(_, _, _, _, _) =>
-          ReduceStepPipe(step.withDescription(descr))
-        case step@UnsortedIdentityReduce(_, _, _, _, _) =>
-          ReduceStepPipe(step.withDescription(descr))
-        case step@IdentityValueSortedReduce(_, _, _, _, _, _) =>
-          ReduceStepPipe(step.withDescription(descr))
-        case step@ValueSortedReduce(_, _, _, _, _, _) =>
-          ReduceStepPipe(step.withDescription(descr))
-        case step@IteratorMappedReduce(_, _, _, _, _) =>
-          ReduceStepPipe(step.withDescription(descr))
-      }
-
-    private def filterKeys[K, V1, V2](rs: ReduceStep[K, V1, V2], fn: K => Boolean): TypedPipe[(K, V2)] =
-      rs match {
-        case IdentityReduce(ord, p, r, d, ev) =>
-          ReduceStepPipe(IdentityReduce(ord, FilterKeys(p, fn), r, d, ev))
-        case UnsortedIdentityReduce(ord, p, r, d, ev) =>
-          ReduceStepPipe(UnsortedIdentityReduce(ord, FilterKeys(p, fn), r, d, ev))
-        case ivsr0@IdentityValueSortedReduce(_, _, _, _, _, _) =>
-          type IVSR[V] = IdentityValueSortedReduce[K, V, V2]
-          val ivsr = ivsr0.evidence.subst[IVSR](ivsr0)
-          val IdentityValueSortedReduce(ord, p, v, r, d, ev) = ivsr
-          ReduceStepPipe(IdentityValueSortedReduce[K, V2, V2](ord, FilterKeys(p, fn), v, r, d, ev))
-        case vsr@ValueSortedReduce(_, _, _, _, _, _) =>
-          def go(vsr: ValueSortedReduce[K, V1, V2]): TypedPipe[(K, V2)] = {
-            val ValueSortedReduce(ord, p, v, redfn, r, d) = vsr
-            ReduceStepPipe(ValueSortedReduce[K, V1, V2](ord, FilterKeys(p, fn), v, redfn, r, d))
-          }
-          go(vsr)
-        case imr@IteratorMappedReduce(_, _, _, _, _) =>
-          def go(imr: IteratorMappedReduce[K, V1, V2]): TypedPipe[(K, V2)] = {
-            val IteratorMappedReduce(ord, p, redfn, r, d) = imr
-            ReduceStepPipe(IteratorMappedReduce[K, V1, V2](ord, FilterKeys(p, fn), redfn, r, d))
-          }
-          go(imr)
-      }
-
     private def handleHashCoGroup[K, V, V2, R](hj: HashCoGroup[K, V, V2, R], recurse: FunctionK[TypedPipe, LiteralPipe]): LiteralPipe[(K, R)] = {
-      val rightLit: LiteralPipe[(K, V2)] = hj.right match {
-        case step@IdentityReduce(_, _, _, _, _) =>
-          type TK[V] = TypedPipe[(K, V)]
-          val mappedV2 = step.evidence.subst[TK](step.mapped)
-          Unary(widen[(K, V2)](recurse(mappedV2)), { (tp: TypedPipe[(K, V2)]) =>
-            ReduceStepPipe(IdentityReduce[K, V2, V2](step.keyOrdering, tp, step.reducers, step.descriptions, implicitly))
-          })
-        case step@UnsortedIdentityReduce(_, _, _, _, _) =>
-          type TK[V] = TypedPipe[(K, V)]
-          val mappedV2 = step.evidence.subst[TK](step.mapped)
-          Unary(widen[(K, V2)](recurse(mappedV2)), { (tp: TypedPipe[(K, V2)]) =>
-            ReduceStepPipe(UnsortedIdentityReduce[K, V2, V2](step.keyOrdering, tp, step.reducers, step.descriptions, implicitly))
-          })
-        case step@IteratorMappedReduce(_, _, _, _, _) =>
-          def go[A, B, C](imr: IteratorMappedReduce[A, B, C]): LiteralPipe[(A, C)] =
-            Unary(recurse(imr.mapped), { (tp: TypedPipe[(A, B)]) => ReduceStepPipe[A, B, C](imr.copy(mapped = tp)) })
-
-          widen(go(step))
+      val rightLit: LiteralPipe[(K, V2)] = {
+        val rs = HashJoinable.toReduceStep(hj.right)
+        def go[A, B, C](rs: ReduceStep[A, B, C]): LiteralPipe[(A, C)] =
+          Unary(recurse(rs.mapped), { tp: TypedPipe[(A, B)] => ReduceStepPipe(ReduceStep.setInput(rs, tp)) })
+        widen(go(rs))
       }
 
-      val ordK: Ordering[K] = hj.right match {
-        case step@IdentityReduce(_, _, _, _, _) => step.keyOrdering
-        case step@UnsortedIdentityReduce(_, _, _, _, _) => step.keyOrdering
-        case step@IteratorMappedReduce(_, _, _, _, _) => step.keyOrdering
-      }
-
+      val ordK: Ordering[K] = hj.right.keyOrdering
       val joiner = hj.joiner
 
       Binary(recurse(hj.left), rightLit,
@@ -583,6 +528,30 @@ object OptimizationRules {
   }
 
   /**
+   * This rule is important in that it allows us to reduce
+   * the number of nodes in the graph, which is helpful to speed up rule application
+   */
+  object ComposeDescriptions extends PartialRule[TypedPipe] {
+    def combine(descs1: List[(String, Boolean)], descs2: List[(String, Boolean)]): List[(String, Boolean)] = {
+      val combined = descs1 ::: descs2
+
+      combined.foldLeft((Set.empty[String], List.empty[(String, Boolean)])) {
+        case (state@(s, acc), item@(m, true)) =>
+          if (s(m)) state
+          else (s + m, item :: acc)
+        case ((s, acc), item) =>
+          (s, item :: acc)
+      }._2.reverse
+    }
+
+
+    def applyWhere[T](on: Dag[TypedPipe]) = {
+      case WithDescriptionTypedPipe(WithDescriptionTypedPipe(input, descs1), descs2) =>
+        WithDescriptionTypedPipe(input, combine(descs1, descs2))
+    }
+  }
+
+  /**
    * In scalding 0.17 and earlier, descriptions were automatically pushdown below
    * merges and flatMaps/map/etc..
    */
@@ -613,10 +582,7 @@ object OptimizationRules {
       case WithDescriptionTypedPipe(WithDescriptionTypedPipe(input, descs1), descs2) =>
         // This rule is important in that it allows us to reduce
         // the number of nodes in the graph, which is helpful to speed up rule application
-        WithDescriptionTypedPipe(input, descs1 ::: descs2)
-      case Fork(WithDescriptionTypedPipe(input, descs)) =>
-        // descriptions are cheap, we can apply them on both sides of a fork
-        WithDescriptionTypedPipe(Fork(input), descs)
+        WithDescriptionTypedPipe(input, ComposeDescriptions.combine(descs1, descs2))
     }
   }
 
@@ -630,7 +596,13 @@ object OptimizationRules {
         val flatMapped = dedupMerge(pipes)
 
         if (pipes.size == flatMapped.size) None // we didn't reduce the number of merges
-        else Some(TypedPipe.typedPipeMonoid.sum(flatMapped))
+        else {
+          Some(flatMapped match {
+            case Nil => EmptyTypedPipe
+            case h :: tail =>
+              tail.foldLeft(h)(MergedTypedPipe(_, _))
+          })
+        }
       case _ => None
     }
   }
@@ -643,10 +615,28 @@ object OptimizationRules {
   object RemoveDuplicateForceFork extends PartialRule[TypedPipe] {
     def applyWhere[T](on: Dag[TypedPipe]) = {
       case ForceToDisk(ForceToDisk(t)) => ForceToDisk(t)
+      case ForceToDisk(WithDescriptionTypedPipe(ForceToDisk(t), desc)) =>
+        // we might as well only do one force to disk in this case
+        WithDescriptionTypedPipe(ForceToDisk(t), desc)
       case ForceToDisk(Fork(t)) => ForceToDisk(t)
       case Fork(Fork(t)) => Fork(t)
       case Fork(ForceToDisk(t)) => ForceToDisk(t)
       case Fork(t) if on.contains(ForceToDisk(t)) => ForceToDisk(t)
+    }
+  }
+
+  /**
+   * If a fork has no fan-out when planned, it serves no purpose
+   * and is safe to remove. Likewise, there is no reason
+   * to put a forceToDisk immediatle after a source
+   */
+  object RemoveUselessFork extends PartialRule[TypedPipe] {
+    def applyWhere[T](on: Dag[TypedPipe]) = {
+      case fork@Fork(t) if on.hasSingleDependent(fork) => t
+      case Fork(src@SourcePipe(_)) => src
+      case Fork(iter@IterablePipe(_)) => iter
+      case ForceToDisk(src@SourcePipe(_)) => src
+      case ForceToDisk(iter@IterablePipe(_)) => iter
     }
   }
 
@@ -704,21 +694,17 @@ object OptimizationRules {
    * us
    */
   object FilterKeysEarly extends Rule[TypedPipe] {
-    private def filterReduceStep[K, V1, V2](rs: ReduceStep[K, V1, V2], fn: K => Boolean): ReduceStep[K, _, _ <: V2] =
-      rs match {
-        case step@IdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-        case step@UnsortedIdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-        case step@IdentityValueSortedReduce(_, _, _, _, _, _) => step.filterKeys(fn)
-        case step@ValueSortedReduce(_, _, _, _, _, _) => step.filterKeys(fn)
-        case step@IteratorMappedReduce(_, _, _, _, _) => step.filterKeys(fn)
-      }
+    private def filterReduceStep[K, V1, V2](rs: ReduceStep[K, V1, V2], fn: K => Boolean): ReduceStep[K, V1, V2] =
+      ReduceStep.setInput(rs, FilterKeys(rs.mapped, fn))
 
     private def filterCoGroupable[K, V](rs: CoGroupable[K, V], fn: K => Boolean): CoGroupable[K, V] =
       rs match {
-        case step@IdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-        case step@UnsortedIdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-        case step@IteratorMappedReduce(_, _, _, _, _) => step.filterKeys(fn)
-        case cg: CoGrouped[K, V] => filterCoGroup(cg, fn)
+        case rs: ReduceStep[K @unchecked, v1, V @unchecked] =>
+          ReduceStep.toHashJoinable(filterReduceStep(rs, fn))
+            .getOrElse {
+              sys.error("unreachable: filterReduceStep returns the same type, and this input type was CoGroupable")
+            }
+        case cg: CoGrouped[K @unchecked, V @unchecked] => filterCoGroup(cg, fn)
       }
 
     private def filterCoGroup[K, V](cg: CoGrouped[K, V], fn: K => Boolean): CoGrouped[K, V] =
@@ -741,11 +727,7 @@ object OptimizationRules {
       case FilterKeys(CoGroupedPipe(cg), fn) =>
         Some(CoGroupedPipe(filterCoGroup(cg, fn)))
       case FilterKeys(HashCoGroup(left, right, joiner), fn) =>
-        val newRight = right match {
-          case step@IdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-          case step@UnsortedIdentityReduce(_, _, _, _, _) => step.filterKeys(fn)
-          case step@IteratorMappedReduce(_, _, _, _, _) => step.filterKeys(fn)
-        }
+        val newRight = HashJoinable.filterKeys(right, fn)
         Some(HashCoGroup(FilterKeys(left, fn), newRight, joiner))
       case FilterKeys(MapValues(pipe, mapFn), filterFn) =>
         Some(MapValues(FilterKeys(pipe, filterFn), mapFn))
@@ -782,11 +764,7 @@ object OptimizationRules {
     }
 
     private def emptyHashJoinable[K, V](hj: HashJoinable[K, V]): Boolean =
-      hj match {
-        case step@IdentityReduce(_, _, _, _, _) => step.mapped == EmptyTypedPipe
-        case step@UnsortedIdentityReduce(_, _, _, _, _) => step.mapped == EmptyTypedPipe
-        case step@IteratorMappedReduce(_, _, _, _, _) => step.mapped == EmptyTypedPipe
-      }
+      HashJoinable.toReduceStep(hj).mapped == EmptyTypedPipe
 
     def applyWhere[T](on: Dag[TypedPipe]) = {
       case CrossPipe(EmptyTypedPipe, _) => EmptyTypedPipe
@@ -800,7 +778,6 @@ object OptimizationRules {
       case FlatMapValues(EmptyTypedPipe, _) => EmptyTypedPipe
       case FlatMapped(EmptyTypedPipe, _) => EmptyTypedPipe
       case ForceToDisk(EmptyTypedPipe) => EmptyTypedPipe
-      case Fork(EmptyTypedPipe) => EmptyTypedPipe
       case HashCoGroup(EmptyTypedPipe, _, _) => EmptyTypedPipe
       case HashCoGroup(_, right, hjf) if emptyHashJoinable(right) && Joiner.isInnerHashJoinLike(hjf) == Some(true) => EmptyTypedPipe
       case MapValues(EmptyTypedPipe, _) => EmptyTypedPipe
@@ -813,6 +790,10 @@ object OptimizationRules {
       case CoGroupedPipe(cgp) if emptyCogroup(cgp) => EmptyTypedPipe
       case WithOnComplete(EmptyTypedPipe, _) => EmptyTypedPipe // there is nothing to do, so we never have workers complete
       case WithDescriptionTypedPipe(EmptyTypedPipe, _) => EmptyTypedPipe // descriptions apply to tasks, but empty has no tasks
+
+      // This rule is tempting, but dangerous since if used in combination
+      // with AddExplicitForks it would create an infinite loop
+      // case Fork(EmptyTypedPipe) => EmptyTypedPipe
     }
   }
 
@@ -909,6 +890,35 @@ object OptimizationRules {
     }
   }
 
+
+  /**
+   * Prefer to do mapValues/flatMapValues in a Reduce/Join
+   * so we can avoid some boxing in-and-out of cascading
+   */
+  object MapValuesInReducers extends PartialRule[TypedPipe] {
+
+    def handleFilter[A](f: Filter[A]): Option[TypedPipe[A]] =
+      f.input match {
+        case ReduceStepPipe(rs) =>
+          Some(ReduceStepPipe(ReduceStep.mapGroup(rs)(FilterGroup(f.fn))))
+        case CoGroupedPipe(cg) =>
+          Some(CoGroupedPipe(CoGrouped.MapGroup(cg, FilterGroup(f.fn))))
+        case _ => None
+      }
+
+    def applyWhere[T](on: Dag[TypedPipe]) = {
+      case MapValues(ReduceStepPipe(rs), fn) =>
+        ReduceStepPipe(ReduceStep.mapGroup(rs)(MapGroupMapValues(fn)))
+      case FlatMapValues(ReduceStepPipe(rs), fn) =>
+        ReduceStepPipe(ReduceStep.mapGroup(rs)(MapGroupFlatMapValues(fn)))
+      case MapValues(CoGroupedPipe(cg), fn) =>
+        CoGroupedPipe(CoGrouped.MapGroup(cg, MapGroupMapValues(fn)))
+      case FlatMapValues(CoGroupedPipe(cg), fn) =>
+        CoGroupedPipe(CoGrouped.MapGroup(cg, MapGroupFlatMapValues(fn)))
+      case f@Filter(_, _) if handleFilter(f).isDefined => handleFilter(f).getOrElse(sys.error("unreachable: already checked isDefined"))
+    }
+  }
+
   ///////
   // These are composed rules that are related
   //////
@@ -952,10 +962,11 @@ object OptimizationRules {
     List(
       // phase 0, add explicit forks to not duplicate pipes on fanout below
       AddExplicitForks,
+      RemoveUselessFork,
       // phase 1, compose flatMap/map, move descriptions down, defer merge, filter pushup etc...
-      composeSame.orElse(DescribeLater).orElse(FilterKeysEarly).orElse(DeferMerge),
+      IgnoreNoOpGroup.orElse(composeSame).orElse(DescribeLater).orElse(FilterKeysEarly).orElse(DeferMerge),
       // phase 2, combine different kinds of mapping operations into flatMaps, including redundant merges
-      composeIntoFlatMap.orElse(simplifyEmpty).orElse(DiamondToFlatMap),
+      composeIntoFlatMap.orElse(simplifyEmpty).orElse(DiamondToFlatMap).orElse(ComposeDescriptions).orElse(MapValuesInReducers),
       // phase 3, remove duplicates forces/forks (e.g. .fork.fork or .forceToDisk.fork, ....)
       RemoveDuplicateForceFork)
 

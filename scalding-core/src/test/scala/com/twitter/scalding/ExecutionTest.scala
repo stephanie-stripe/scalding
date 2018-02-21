@@ -19,6 +19,7 @@ import com.twitter.algebird.monad.Reader
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.MacroEqualityOrderedSerialization
 import com.twitter.scalding.serialization.OrderedSerialization
 import java.nio.file.{FileSystems, Files, Path}
+import java.io.File
 import java.util
 
 import org.scalatest.{Matchers, WordSpec}
@@ -94,6 +95,13 @@ class ZippedExecutionWithTempFiles(args: Args, tempFileOne: String, tempFileTwo:
 }
 
 case class MyCustomType(s: String)
+
+class NormalJobToExecutionTestJob(args: Args) extends Job(args) {
+  TypedPipe.from(0 to 100)
+    .groupBy(_ % 3)
+    .sum
+    .write(source.NullSink)
+}
 
 class ExecutionTest extends WordSpec with Matchers {
   implicit class ExecutionTestHelper[T](ex: Execution[T]) {
@@ -361,6 +369,26 @@ class ExecutionTest extends WordSpec with Matchers {
       cleanupHook.get.run()
       // Remove the hook so it doesn't show up in the list of shutdown hooks for other tests
       Runtime.getRuntime.removeShutdownHook(cleanupHook.get)
+    }
+
+    "clean up temporary files on finish" in {
+      val tempFile = Files.createTempDirectory("scalding-execution-test").toFile.getAbsolutePath
+      val testData = List("a", "b", "c")
+
+      val ex = ExecutionTestJobs.writeExecutionWithTempFile(tempFile, testData)
+      val onFinish = Execution.withConfig(ex)(_.setExecutionCleanupOnFinish(true))
+      onFinish.shouldSucceedHadoop()
+
+      // This is hacky, but there's a small chance that the cleanup thread has not finished
+      // running by the time we check below
+      // A small sleep like this appears to be sufficient to ensure we can see it
+      Thread.sleep(1000)
+      val f = new File(tempFile)
+      def allChildren(f: File): List[File] =
+        if (f.isDirectory) f.listFiles().toList.flatMap(allChildren(_))
+        else List(f)
+
+      assert(allChildren(f).isEmpty, f.toString)
     }
 
     "clean up temporary files on exit with a zip" in {
@@ -810,6 +838,34 @@ class ExecutionTest extends WordSpec with Matchers {
       "Execution.sequence" in {
         mutableLaws(SequenceMutable(), Some({ x: Int => Seq(x, x * 3) }))
       }
+    }
+  }
+
+  "Simple jobs" should {
+    "convert to Execution and run" in {
+      val ex = Job.toExecutionFromClass(classOf[NormalJobToExecutionTestJob], Execution.failed(new Exception("couldn't run")))
+      val res = ex.waitFor(Config.empty, Local(true))
+      assert(res.isSuccess)
+    }
+    "convert ExecutionJob to Execution" in {
+      val test = JobTest(new WordCountEc(_))
+        .arg("input", "in")
+        .arg("output", "out")
+        .source(TextLine("in"), List((0, "hello world"), (1, "goodbye world")))
+        .typedSink(TypedTsv[(String, Long)]("out")) { outBuf =>
+          outBuf.toMap shouldBe Map("hello" -> 1L, "world" -> 2L, "goodbye" -> 1L)
+        }
+      val ex = Job.toExecutionFromClass(classOf[WordCountEc], Execution.failed(new Exception("oh no")))
+      val check =
+        for {
+          _ <- ex
+          mode <- Execution.getMode
+          _ = test.postRunChecks(mode)
+        } yield ()
+
+      val conf = Config.empty.setArgs(test.getArgs)
+      val mode = test.getTestMode(useHadoop = false)
+      assert(check.waitFor(conf, mode).isSuccess)
     }
   }
 }

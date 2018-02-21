@@ -21,29 +21,36 @@ object TypedPipeGen {
   }
 
   def mapped(srcGen: Gen[TypedPipe[Int]]): Gen[TypedPipe[Int]] = {
+    val commonFreq = 10
     val next1: Gen[TypedPipe[Int] => TypedPipe[Int]] =
-      Gen.oneOf(
-        tpGen(srcGen).map { p: TypedPipe[Int] =>
+      Gen.frequency(
+        (1, tpGen(srcGen).map { p: TypedPipe[Int] =>
           { x: TypedPipe[Int] => x.cross(p).keys }
-        },
-        tpGen(srcGen).map { p: TypedPipe[Int] =>
+        }),
+        (2, tpGen(srcGen).map { p: TypedPipe[Int] =>
           { x: TypedPipe[Int] => x.cross(ValuePipe(2)).values }
-        },
+        }),
         //Gen.const({ t: TypedPipe[Int] => t.debug }), debug spews a lot to the terminal
-        Arbitrary.arbitrary[Int => Boolean].map { fn =>
+        (commonFreq, Arbitrary.arbitrary[Int => Boolean].map { fn =>
           { t: TypedPipe[Int] => t.filter(fn) }
-        },
-        Gen.const({ t: TypedPipe[Int] => t.forceToDisk }),
-        Gen.const({ t: TypedPipe[Int] => t.fork }),
-        tpGen(srcGen).map { p: TypedPipe[Int] =>
+        }),
+        (commonFreq, Arbitrary.arbitrary[Int => Int].map { fn =>
+          { t: TypedPipe[Int] => t.map(fn) }
+        }),
+        (commonFreq, Arbitrary.arbitrary[Int => List[Int]].map { fn =>
+          { t: TypedPipe[Int] => t.flatMap(fn.andThen(_.take(4))) } // the take is to not get too big
+        }),
+        (2, Gen.const({ t: TypedPipe[Int] => t.forceToDisk })),
+        (2, Gen.const({ t: TypedPipe[Int] => t.fork })),
+        (5, tpGen(srcGen).map { p: TypedPipe[Int] =>
           { x: TypedPipe[Int] => x ++ p }
-        },
-        Gen.identifier.map { id =>
+        }),
+        (1, Gen.identifier.map { id =>
           { t: TypedPipe[Int] => t.addTrap(TypedText.tsv[Int](id)) }
-        },
-        Gen.identifier.map { id =>
+        }),
+        (1, Gen.identifier.map { id =>
           { t: TypedPipe[Int] => t.withDescription(id) }
-        })
+        }))
 
     val one = for {
       n <- next1
@@ -73,7 +80,8 @@ object TypedPipeGen {
       for {
         single <- tpGen(srcGen)
         fn <- Arbitrary.arbitrary[Int => List[(Int, Int)]]
-      } yield single.flatMap(fn))
+      } yield single.flatMap(fn.andThen(_.take(4))) // take to not get too big
+      )
 
     val two = Gen.oneOf(
       for {
@@ -83,7 +91,7 @@ object TypedPipeGen {
       for {
         fn <- Arbitrary.arbitrary[Int => List[Int]]
         pair <- keyRec
-      } yield pair.flatMapValues(fn),
+      } yield pair.flatMapValues(fn.andThen(_.take(4))), // take to not get too big
       for {
         fn <- Arbitrary.arbitrary[Int => Int]
         pair <- keyRec
@@ -106,7 +114,7 @@ object TypedPipeGen {
       for {
         p1 <- keyRec
         p2 <- keyRec
-      } yield p1.hashJoin(p2).values,
+      } yield p1.hashJoin(p2).mapValues { case (a, b) => 31 * a + b },
       for {
         p1 <- keyRec
         p2 <- keyRec
@@ -114,7 +122,7 @@ object TypedPipeGen {
       for {
         p1 <- keyRec
         p2 <- keyRec
-      } yield p1.join(p2).mapValues { case (a, b) => a * b }.toTypedPipe)
+      } yield p1.join(p2).mapValues { case (a, b) => a + 31 * b }.toTypedPipe)
 
     // bias to consuming Int, since the we can stack overflow with the (Int, Int)
     // cases
@@ -135,7 +143,7 @@ object TypedPipeGen {
    * Iterable sources
    */
   val genWithIterableSources: Gen[TypedPipe[Int]] =
-    Gen.choose(0, 20) // don't make giant lists which take too long to evaluate
+    Gen.choose(0, 16) // don't make giant lists which take too long to evaluate
       .flatMap { sz =>
         tpGen(Gen.listOfN(sz, Arbitrary.arbitrary[Int]).map(TypedPipe.from(_)))
       }
@@ -147,6 +155,7 @@ object TypedPipeGen {
 
   val allRules = List(
     AddExplicitForks,
+    ComposeDescriptions,
     ComposeFlatMap,
     ComposeMap,
     ComposeFilter,
@@ -161,10 +170,12 @@ object TypedPipeGen {
     DeferMerge,
     FilterKeysEarly,
     FilterLocally,
-    EmptyIsOftenNoOp,
+    //EmptyIsOftenNoOp, this causes confluence problems when combined with other rules randomly.
+    //Have to be careful about the order it is applied
     EmptyIterableIsEmpty,
     HashToShuffleCoGroup,
-    ForceToDiskBeforeHashJoin)
+    ForceToDiskBeforeHashJoin,
+    MapValuesInReducers)
 
   def genRuleFrom(rs: List[Rule[TypedPipe]]): Gen[Rule[TypedPipe]] =
     for {
@@ -173,6 +184,17 @@ object TypedPipeGen {
     } yield rs.reduce(_.orElse(_))
 
   val genRule: Gen[Rule[TypedPipe]] = genRuleFrom(allRules)
+
+  // How many steps would this be in Hadoop on Cascading
+  def steps[A](p: TypedPipe[A]): Int = {
+    val mode = Hdfs.default
+    val fd = new FlowDef
+    val pipe = CascadingBackend.toPipeUnoptimized(p, NullSink.sinkFields)(fd, mode, NullSink.setter)
+    NullSink.writeFrom(pipe)(fd, mode)
+    val ec = ExecutionContext.newContext(Config.defaultFrom(mode))(fd, mode)
+    val flow = ec.buildFlow.get
+    flow.getFlowSteps.size
+  }
 }
 
 /**
@@ -208,12 +230,35 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
     }
   }
 
+  test("optimization rules are reproducible") {
+    import TypedPipeGen.{ genWithFakeSources, genRule }
+
+    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 5000)
+    forAll(genWithFakeSources, genRule) { (t, rule) =>
+      val optimized = Dag.applyRule(t, toLiteral, rule)
+      val optimized2 = Dag.applyRule(t, toLiteral, rule)
+      assert(optimized == optimized2)
+    }
+  }
+
+  test("standard rules are reproducible") {
+    import TypedPipeGen.{ genWithFakeSources, genRule }
+
+    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 5000)
+    forAll(genWithFakeSources) { t =>
+      val (dag1, id1) = Dag(t, toLiteral)
+      val opt1 = dag1.applySeq(OptimizationRules.standardMapReduceRules)
+      val t1 = opt1.evaluate(id1)
+
+      val (dag2, id2) = Dag(t, toLiteral)
+      val opt2 = dag2.applySeq(OptimizationRules.standardMapReduceRules)
+      val t2 = opt2.evaluate(id2)
+      assert(t1 == t2)
+    }
+  }
+
   def optimizationLaw[T: Ordering](t: TypedPipe[T], rule: Rule[TypedPipe]) = {
     val optimized = Dag.applyRule(t, toLiteral, rule)
-    val optimized2 = Dag.applyRule(t, toLiteral, rule)
-
-    // Optimization pure is function (wrt to universal equality)
-    assert(optimized == optimized2)
 
     // We don't want any further optimization on this job
     val conf = Config.empty.setOptimizationPhases(classOf[EmptyOptimizationPhases])
@@ -225,23 +270,12 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
   def optimizationReducesSteps[T](init: TypedPipe[T], rule: Rule[TypedPipe]) = {
     val optimized = Dag.applyRule(init, toLiteral, rule)
 
-    // How many steps would this be in Hadoop on Cascading
-    def steps(p: TypedPipe[T]): Int = {
-      val mode = Hdfs.default
-      val fd = new FlowDef
-      val pipe = CascadingBackend.toPipeUnoptimized(p, NullSink.sinkFields)(fd, mode, NullSink.setter)
-      NullSink.writeFrom(pipe)(fd, mode)
-      val ec = ExecutionContext.newContext(Config.defaultFrom(mode))(fd, mode)
-      val flow = ec.buildFlow.get
-      flow.getFlowSteps.size
-    }
-
-    assert(steps(init) >= steps(optimized))
+    assert(TypedPipeGen.steps(init) >= TypedPipeGen.steps(optimized))
   }
 
   test("all optimization rules don't change results") {
     import TypedPipeGen.{ genWithIterableSources, genRule }
-    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 200)
+    implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 50)
     forAll(genWithIterableSources, genRule)(optimizationLaw[Int] _)
   }
 
