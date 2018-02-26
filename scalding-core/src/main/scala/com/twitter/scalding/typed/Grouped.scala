@@ -17,19 +17,13 @@ package com.twitter.scalding.typed
 
 import com.twitter.algebird.Semigroup
 import com.twitter.algebird.mutable.PriorityQueueMonoid
-import com.twitter.scalding.typed.functions.{ Constant, EmptyGuard, EqTypes, FilterGroup, MapValueStream, MapGroupMapValues, SumAll }
+import com.twitter.scalding.typed.functions._
 import com.twitter.scalding.typed.functions.ComposedFunctions.ComposedMapGroup
 import scala.collection.JavaConverters._
 import scala.util.hashing.MurmurHash3
 import java.io.Serializable
 
 object CoGroupable extends Serializable {
-  /*
-   * This is the default empty join function needed for CoGroupable and HashJoinable
-   */
-  def castingJoinFunction[V]: (Any, Iterator[Any], Seq[Iterable[Any]]) => Iterator[V] =
-    Joiner.CastingWideJoin[V]()
-
   /**
    * Return true if there is a sum occurring at the end the mapGroup transformations
    * If we know this is finally summed, we can make some different optimization choices
@@ -51,7 +45,8 @@ object CoGroupable extends Serializable {
       case WithReducers(on, _) => atMostOneValue(on)
       case WithDescription(on, _) => atMostOneValue(on)
       case FilterKeys(on, _) => atMostOneValue(on)
-      case MapGroup(_, fn) => atMostOneFn(fn)
+      case MapGroup(on, fn) =>
+        atMostOneFn(fn) || (atMostOneValue(on) && atMostInputSizeFn(fn))
       case IdentityReduce(_, _, _, _, _) => false
       case UnsortedIdentityReduce(_, _, _, _, _) => false
       case IteratorMappedReduce(_, _, fn, _, _) => atMostOneFn(fn)
@@ -66,11 +61,32 @@ object CoGroupable extends Serializable {
    */
   final def atMostOneFn[A, B, C](fn: (A, Iterator[B]) => Iterator[C]): Boolean =
     fn match {
-      case ComposedMapGroup(first, MapGroupMapValues(_)) => atMostOneFn(first)
-      case ComposedMapGroup(first, FilterGroup(_)) => atMostOneFn(first)
-      case ComposedMapGroup(_, fn) => atMostOneFn(fn)
+      case ComposedMapGroup(_, fn) if atMostOneFn(fn) => true
+      case ComposedMapGroup(first, second) => atMostOneFn(first) && atMostInputSizeFn(second)
       case MapValueStream(SumAll(_)) => true
+      case MapValueStream(ToList()) => true
+      case MapValueStream(FoldIterator(_)) => true
+      case MapValueStream(FoldLeftIterator(_, _)) => true
+      case FoldWithKeyIterator(_) => true
       case EmptyGuard(fn) => atMostOneFn(fn)
+      case _ => false
+    }
+
+  /**
+   * Returns true if the group mapping function does not increase
+   * the number of items in the Iterator
+   */
+  final def atMostInputSizeFn[A, B, C](fn: (A, Iterator[B]) => Iterator[C]): Boolean =
+    fn match {
+      case MapGroupMapValues(_) => true
+      case MapValueStream(Drop(_)) => true
+      case MapValueStream(DropWhile(_)) => true
+      case MapValueStream(Take(_)) => true
+      case MapValueStream(TakeWhile(_)) => true
+      case FilterGroup(_) => true
+      case EmptyGuard(fn) => atMostInputSizeFn(fn)
+      case ComposedMapGroup(first, second) => atMostInputSizeFn(first) && atMostInputSizeFn(second)
+      case fn if atMostOneFn(fn) => true // since 0 always goes to 0, and 1 -> 1, atMostOne implies atMostInputSize
       case _ => false
     }
 }
@@ -94,7 +110,7 @@ sealed trait CoGroupable[K, +R] extends HasReducers with HasDescription with Ser
    * how to achieve, and since it is an internal function, not clear it
    * would actually help anyone for it to be type-safe
    */
-  private[scalding] def joinFunction: (K, Iterator[Any], Seq[Iterable[Any]]) => Iterator[R]
+  def joinFunction: MultiJoinFunction[K, R]
 
   /**
    * Smaller is about average values/key not total size (that does not matter, but is
@@ -135,6 +151,34 @@ object CoGrouped extends Serializable {
     go(list)
   }
 
+  def maybeCompose[A, B, C](cg: CoGrouped[A, B], rs: ReduceStep[A, B, C]): Option[CoGrouped[A, C]] = {
+    val reds = com.twitter.scalding.typed.WithReducers.maybeCombine(cg.reducers, rs.reducers)
+
+    val optCg = rs match {
+      case step @ IdentityReduce(_, _, _, _, _) =>
+        type Res[T] = CoGrouped[A, T]
+        Some(step.evidence.subst[Res](cg))
+      case step @ UnsortedIdentityReduce(_, _, _, _, _) =>
+        type Res[T] = CoGrouped[A, T]
+        Some(step.evidence.subst[Res](cg))
+      case step @ IteratorMappedReduce(_, _, _, _, _) =>
+        Some(CoGrouped.MapGroup(cg, step.reduceFn))
+      case IdentityValueSortedReduce(_, _, _, _, _, _) =>
+        // We can't sort after a join
+        None
+      case ValueSortedReduce(_, _, _, _, _, _) =>
+        // We can't sort after a join
+        None
+    }
+
+    optCg.map { cg1 =>
+      reds match {
+        case Some(r) if cg1.reducers != reds => CoGrouped.WithReducers(cg1, r)
+        case _ => cg1
+      }
+    }
+  }
+
   final case class Pair[K, A, B, C](
     larger: CoGroupable[K, A],
     smaller: CoGroupable[K, B],
@@ -151,7 +195,7 @@ object CoGrouped extends Serializable {
       }
 
     def inputs = larger.inputs ++ smaller.inputs
-    def reducers = (larger.reducers.iterator ++ smaller.reducers.iterator).reduceOption(_ max _)
+    def reducers = com.twitter.scalding.typed.WithReducers.maybeCombine(larger.reducers, smaller.reducers)
     def descriptions: Seq[String] = larger.descriptions ++ smaller.descriptions
     def keyOrdering = smaller.keyOrdering
 
@@ -160,41 +204,13 @@ object CoGrouped extends Serializable {
      * all the reducers.
      */
     def joinFunction = {
-      val leftSeqCount = larger.inputs.size - 1
-      val jf = larger.joinFunction // avoid capturing `this` in the closure below
-      val smallerJf = smaller.joinFunction
-
       /**
        * if there is at most one value on the smaller side definitely
        * cache the result to avoid repeatedly computing it
        */
       val smallerIsAtMostOne = CoGroupable.atMostOneValue(smaller)
-
-      { (k: K, leftMost: Iterator[Any], joins: Seq[Iterable[Any]]) =>
-        val (leftSeq, rightSeq) = joins.splitAt(leftSeqCount)
-        val joinedLeft = jf(k, leftMost, leftSeq)
-
-        // Only do this once, for all calls to iterator below
-        val smallerHead = rightSeq.head // linter:disable:UndesirableTypeInference
-        val smallerTail = rightSeq.tail
-
-        val joinedRight =
-          if (smallerIsAtMostOne) {
-            // we should materialize the final right one time:
-            smallerJf(k, smallerHead.iterator, smallerTail).toList
-          } else {
-            // TODO: it might make sense to cache this in memory as an IndexedSeq and not
-            // recompute it on every value for the left if the smallerJf is non-trivial
-            // we could see how long it is, and possible switch to a cached version the
-            // second time through if it is small enough
-            new Iterable[B] {
-              def iterator =
-                smallerJf(k, smallerHead.iterator, smallerTail)
-            }
-          }
-
-        fn(k, joinedLeft, joinedRight)
-      }
+      if (smallerIsAtMostOne) MultiJoinFunction.PairCachedRight(larger.joinFunction, smaller.joinFunction, fn)
+      else MultiJoinFunction.Pair(larger.joinFunction, smaller.joinFunction, fn)
     }
   }
 
@@ -230,21 +246,10 @@ object CoGrouped extends Serializable {
     def reducers = on.reducers
     def descriptions: Seq[String] = on.descriptions
     def keyOrdering = on.keyOrdering
-    def joinFunction = {
-      val joinF = on.joinFunction // don't capture on inside the closure
-      val guardedFn = Grouped.addEmptyGuard(fn)
-
-      { (k: K, leftMost: Iterator[Any], joins: Seq[Iterable[Any]]) =>
-        val joined = joinF(k, leftMost, joins)
-        /*
-         * After the join, if the key has no values, don't present it to the mapGroup
-         * function. Doing so would break the invariant:
-         *
-         * a.join(b).toTypedPipe.group.mapGroup(fn) == a.join(b).mapGroup(fn)
-         */
-        guardedFn(k, joined)
-      }
-    }
+    def joinFunction =
+      MultiJoinFunction.MapGroup(
+        on.joinFunction,
+        fn)
   }
 }
 
@@ -274,7 +279,13 @@ sealed trait CoGrouped[K, +R] extends KeyedListLike[K, R, CoGrouped]
     CoGrouped.FilterKeys(this, fn)
 
   override def mapGroup[R1](fn: (K, Iterator[R]) => Iterator[R1]): CoGrouped[K, R1] =
-    CoGrouped.MapGroup(this, fn)
+    /*
+     * After the join, if the key has no values, don't present it to the mapGroup
+     * function. Doing so would break the invariant:
+     *
+     * a.join(b).toTypedPipe.group.mapGroup(fn) == a.join(b).mapGroup(fn)
+     */
+    CoGrouped.MapGroup(this, Grouped.addEmptyGuard(fn))
 
   override def toTypedPipe: TypedPipe[(K, R)] =
     TypedPipe.CoGroupedPipe(this)
@@ -353,8 +364,11 @@ object Grouped extends Serializable {
     IdentityReduce[K, V, V](ordering, pipe, None, Nil, implicitly)
 
   def addEmptyGuard[K, V1, V2](fn: (K, Iterator[V1]) => Iterator[V2]): (K, Iterator[V1]) => Iterator[V2] =
-    EmptyGuard(fn)
-
+    fn match {
+      case alreadyGuarded@EmptyGuard(_) => alreadyGuarded
+      case ami if CoGroupable.atMostInputSizeFn(ami) => ami // already safe
+      case needGuard => EmptyGuard(needGuard)
+    }
 }
 
 /**
@@ -386,7 +400,7 @@ sealed trait Reversable[+R] {
  * details like where this occurs, the number of reducers, etc... are
  * left in the Grouped class
  */
-sealed trait ReduceStep[K, V1, V2] extends KeyedPipe[K] {
+sealed trait ReduceStep[K, V1, V2] extends KeyedPipe[K] with HasReducers {
   /**
    * Note, this satisfies KeyedPipe.mapped: TypedPipe[(K, Any)]
    */
@@ -396,6 +410,52 @@ sealed trait ReduceStep[K, V1, V2] extends KeyedPipe[K] {
 }
 
 object ReduceStep extends Serializable {
+
+  /**
+   * assuming coherent Orderings on the A, in some cases ReduceSteps can be combined.
+   * Note: we have always assumed coherant orderings in scalding with joins where
+   * both sides have their own Ordering, so we argue this is not different.
+   *
+   * If a user has incoherant Orderings, which are already dangerous, they can
+   * use .forceToDisk between reduce steps, however, a better strategy is to
+   * use different key types.
+   *
+   * The only case where they can't is when there are two different value sorts going
+   * on.
+   */
+  def maybeCompose[A, B, C, D](rs1: ReduceStep[A, B, C], rs2: ReduceStep[A, C, D]): Option[ReduceStep[A, B, D]] = {
+    val reds = WithReducers.maybeCombine(rs1.reducers, rs2.reducers)
+    val optRs = (rs1, rs2) match {
+      case (step @ IdentityReduce(_, _, _, _, _), step2) =>
+        type Res[T] = ReduceStep[A, T, D]
+        Some(step.evidence.reverse.subst[Res](step2))
+      case (step @ UnsortedIdentityReduce(_, _, _, _, _), step2) =>
+        type Res[T] = ReduceStep[A, T, D]
+        Some(step.evidence.reverse.subst[Res](step2))
+      case (step, step2 @ IdentityReduce(_, _, _, _, _)) =>
+        type Res[T] = ReduceStep[A, B, T]
+        Some(step2.evidence.subst[Res](step))
+      case (step, step2 @ UnsortedIdentityReduce(_, _, _, _, _)) =>
+        type Res[T] = ReduceStep[A, B, T]
+        Some(step2.evidence.subst[Res](step))
+      case (step, step2 @ IteratorMappedReduce(_, _, _, _, _)) =>
+        Some(mapGroup(step)(step2.reduceFn))
+      /*
+       * All the rest have either two sorts, or a sort after a reduce
+       */
+      case (IdentityValueSortedReduce(_, _, _, _, _, _), IdentityValueSortedReduce(_, _, _, _, _, _)) => None
+      case (IdentityValueSortedReduce(_, _, _, _, _, _), ValueSortedReduce(_, _, _, _, _, _)) => None
+      case (IteratorMappedReduce(_, _, _, _, _), IdentityValueSortedReduce(_, _, _, _, _, _)) => None
+      case (IteratorMappedReduce(_, _, _, _, _), ValueSortedReduce(_, _, _, _, _, _)) => None
+      case (ValueSortedReduce(_, _, _, _, _, _), IdentityValueSortedReduce(_, _, _, _, _, _)) => None
+      case (ValueSortedReduce(_, _, _, _, _, _), ValueSortedReduce(_, _, _, _, _, _)) => None
+    }
+
+    optRs.map { composed =>
+      reds.fold(composed)(withReducers(composed, _))
+    }
+  }
+
   def setInput[A, B, C](rs: ReduceStep[A, B, C], input: TypedPipe[(A, B)]): ReduceStep[A, B, C] = {
     type Res[V] = ReduceStep[A, V, C]
     type In[V] = TypedPipe[(A, V)]
@@ -569,7 +629,7 @@ final case class IdentityReduce[K, V1, V2](
   }
 
   /** This is just an identity that casts the result to V2 */
-  override def joinFunction = CoGroupable.castingJoinFunction[V2]
+  override def joinFunction = MultiJoinFunction.Casting[K, V2]
 }
 
 final case class UnsortedIdentityReduce[K, V1, V2](
@@ -641,7 +701,7 @@ final case class UnsortedIdentityReduce[K, V1, V2](
   }
 
   /** This is just an identity that casts the result to V2 */
-  override def joinFunction = CoGroupable.castingJoinFunction[V2]
+  override def joinFunction = MultiJoinFunction.Casting[K, V2]
 }
 
 final case class IdentityValueSortedReduce[K, V1, V2](
@@ -736,6 +796,7 @@ final case class ValueSortedReduce[K, V1, V2](
     ValueSortedReduce[K, V1, V2](keyOrdering, mapped.filterKeys(fn), valueSort, reduceFn, reducers, descriptions)
 
   override def mapGroup[V3](fn: (K, Iterator[V2]) => Iterator[V3]) = {
+    // we don't need the empty guard here because ComposedMapGroup already does it
     val newReduce = ComposedMapGroup(reduceFn, fn)
     ValueSortedReduce[K, V1, V3](
       keyOrdering, mapped, valueSort, newReduce, reducers, descriptions)
@@ -766,18 +827,11 @@ final case class IteratorMappedReduce[K, V1, V2](
     copy(mapped = mapped.filterKeys(fn))
 
   override def mapGroup[V3](fn: (K, Iterator[V2]) => Iterator[V3]) = {
-    // don't make a closure
+    // we don't need the empty guard here because ComposedMapGroup already does it
     val newReduce = ComposedMapGroup(reduceFn, fn)
     copy(reduceFn = newReduce)
   }
 
-  override def joinFunction = {
-    // don't make a closure
-    val localRed = reduceFn;
-    { (k, iter, empties) =>
-      assert(empties.isEmpty, "this join function should never be called with non-empty right-most")
-      localRed(k, iter.asInstanceOf[Iterator[V1]])
-    }
-  }
+  override def joinFunction = MultiJoinFunction.MapCast(reduceFn)
 }
 

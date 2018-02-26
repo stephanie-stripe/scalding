@@ -149,6 +149,15 @@ case class SemigroupFromProduct[T](ring: Ring[T]) extends Semigroup[T] {
   def plus(a: T, b: T) = ring.times(a, b)
 }
 
+/**
+ * This is a semigroup that throws IllegalArgumentException if
+ * there is more than one item. This is used to trigger optimizations
+ * where the user knows there is at most one value per key.
+ */
+case class RequireSingleSemigroup[T]() extends Semigroup[T] {
+  def plus(a: T, b: T) = throw new IllegalArgumentException(s"expected only one item, calling plus($a, $b)")
+}
+
 case class ConsList[T]() extends Function1[(T, List[T]), List[T]] {
   def apply(results: (T, List[T])) = results._1 :: results._2
 }
@@ -157,8 +166,11 @@ case class ReverseList[T]() extends Function1[List[T], List[T]] {
   def apply(results: List[T]) = results.reverse
 }
 
-case class ToList[A]() extends Function1[A, List[A]] {
-  def apply(a: A) = a :: Nil
+case class ToList[A]() extends Function1[Iterator[A], Iterator[List[A]]] {
+  def apply(as: Iterator[A]) =
+    // This should never really happen, but we are being defensive
+    if (as.isEmpty) Iterator.empty
+    else Iterator.single(as.toList)
 }
 
 case class ToSet[A]() extends Function1[A, Set[A]] {
