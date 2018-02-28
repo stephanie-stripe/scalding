@@ -49,10 +49,10 @@ object TypedPipe extends Serializable {
      * This could be in TypedSource, but we don't want to encourage users
      * to work directly with Pipe
      */
-    case class WrappingSource[T](pipe: Pipe,
+    case class WrappingSource[T](@transient pipe: Pipe,
       fields: Fields,
       @transient localFlow: FlowDef, // FlowDef is not serializable. We shouldn't need to, but being paranoid
-      mode: Mode,
+      @transient mode: Mode,
       conv: TupleConverter[T]) extends TypedSource[T] {
 
       def converter[U >: T]: TupleConverter[U] =
@@ -170,9 +170,9 @@ object TypedPipe extends Serializable {
    final case class Mapped[T, U](input: TypedPipe[T], fn: T => U) extends TypedPipe[U]
    final case class MergedTypedPipe[T](left: TypedPipe[T], right: TypedPipe[T]) extends TypedPipe[T]
    final case class ReduceStepPipe[K, V1, V2](reduce: ReduceStep[K, V1, V2]) extends TypedPipe[(K, V2)]
-   final case class SourcePipe[T](source: TypedSource[T]) extends TypedPipe[T]
+   final case class SourcePipe[T](@transient source: TypedSource[T]) extends TypedPipe[T]
    final case class SumByLocalKeys[K, V](input: TypedPipe[(K, V)], semigroup: Semigroup[V]) extends TypedPipe[(K, V)]
-   final case class TrappedPipe[T](input: TypedPipe[T], sink: Source with TypedSink[T], conv: TupleConverter[T]) extends TypedPipe[T]
+   final case class TrappedPipe[T](input: TypedPipe[T], @transient sink: Source with TypedSink[T], conv: TupleConverter[T]) extends TypedPipe[T]
    /**
     * descriptions carry a boolean that is true if we should deduplicate the message.
     * This is used for line numbers which are otherwise often duplicated

@@ -86,6 +86,7 @@ class KryoHadoop(@transient config: Config) extends KryoInstantiator {
      * is serialized, but that's very expensive.
      */
     newK.addDefaultSerializer(classOf[cascading.pipe.Pipe], new SingletonSerializer(null))
+    newK.addDefaultSerializer(classOf[com.twitter.scalding.typed.TypedPipe[_]], new SingletonSerializer(null))
 
     newK.setReferences(useRefs)
 
