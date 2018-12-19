@@ -18,7 +18,6 @@ package com.twitter.scalding.thrift.macros.impl.ordered_serialization
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization._
 import com.twitter.scrooge.ThriftEnum
 
-import scala.language.experimental.macros
 import scala.reflect.macros.Context
 
 object ScroogeEnumOrderedBuf {
@@ -53,7 +52,7 @@ object ScroogeEnumOrderedBuf {
         q"${outerType.typeSymbol.companionSymbol}.apply($inputStream.readPosVarInt)"
       override def compare(elementA: ctx.TermName, elementB: ctx.TermName): ctx.Tree =
         q"""
-        _root_.java.lang.Integer.compare($elementA.value, $elementB.value) : Int
+        _root_.java.lang.Integer.compare($elementA.value, $elementB.value) : _root_.scala.Int
         """
 
       override def length(element: Tree): CompileTimeLengthTypes[c.type] = CompileTimeLengthTypes.FastLengthCalculation(c)(q"posVarIntSize($element.value)")

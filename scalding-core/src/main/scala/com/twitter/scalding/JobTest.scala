@@ -22,8 +22,8 @@ import cascading.tuple.Tuple
 import cascading.tuple.TupleEntry
 import cascading.stats.CascadingStats
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.mapred.JobConf
 
-import scala.util.Try
 
 object JobTest {
 
@@ -187,10 +187,11 @@ class JobTest(cons: (Args) => Job) {
     // Create a global mode to use for testing.
     val testMode: TestMode =
       if (useHadoop) {
-        val conf = optConfig.getOrElse(new Configuration)
+        val conf = optConfig.getOrElse(new JobConf)
         // Set the polling to a lower value to speed up tests:
         conf.set("jobclient.completion.poll.interval", "100")
         conf.set("cascading.flow.job.pollinginterval", "5")
+        conf.set("mapreduce.framework.name", "local")
         // Work around for local hadoop race
         conf.set("mapred.local.dir", "/tmp/hadoop/%s/mapred/local".format(java.util.UUID.randomUUID))
         HadoopTest(conf, sourceMap)

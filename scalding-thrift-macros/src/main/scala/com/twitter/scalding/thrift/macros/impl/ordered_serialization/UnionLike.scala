@@ -15,11 +15,8 @@
  */
 package com.twitter.scalding.thrift.macros.impl.ordered_serialization
 
-import scala.language.experimental.macros
 import scala.reflect.macros.Context
 
-import com.twitter.scalding._
-import com.twitter.scalding.serialization.OrderedSerialization
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization._
 
 object UnionLike {
@@ -54,15 +51,15 @@ object UnionLike {
                 if($valueA == $idx) {
                   $commonCmp
                 } else {
-                  sys.error("Unable to compare unknown type")
+                  _root_.scala.sys.error("Unable to compare unknown type")
                 }""")
         }
     }.get
 
     q"""
-        val $valueA: Int = $inputStreamA.readByte.toInt
-        val $valueB: Int = $inputStreamB.readByte.toInt
-        val $idxCmp: Int = _root_.java.lang.Integer.compare($valueA, $valueB)
+        val $valueA: _root_.scala.Int = $inputStreamA.readByte.toInt
+        val $valueB: _root_.scala.Int = $inputStreamB.readByte.toInt
+        val $idxCmp: _root_.scala.Int = _root_.java.lang.Integer.compare($valueA, $valueB)
         if($idxCmp != 0) {
           $idxCmp
         } else {

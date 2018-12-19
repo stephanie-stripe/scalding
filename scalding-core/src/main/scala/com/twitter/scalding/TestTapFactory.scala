@@ -20,15 +20,12 @@ import cascading.scheme.Scheme
 import cascading.tuple.Fields
 import cascading.tap.SinkMode
 import cascading.tap.Tap
-import cascading.tap.hadoop.Hfs
 import cascading.scheme.NullScheme
-
-import java.io.{ Serializable, InputStream, OutputStream }
-
+import com.twitter.scalding.tap.ScaldingHfs
+import java.io.{ InputStream, OutputStream, Serializable }
 import org.apache.hadoop.mapred.JobConf
 import org.apache.hadoop.mapred.OutputCollector
 import org.apache.hadoop.mapred.RecordReader
-
 import scala.collection.JavaConverters._
 
 /**
@@ -37,8 +34,11 @@ import scala.collection.JavaConverters._
 object TestTapFactory extends Serializable {
   val sourceNotFoundError: String = "Source %s does not appear in your test sources.  Make sure " +
     "each source in your job has a corresponding source in the test sources that is EXACTLY " +
-    "equal.  Call the '.source' or '.sink' methods as appropriate on your JobTest to add test " +
-    "buffers for each source or sink."
+    "equal.  Call the '.source' method on your JobTest to add test buffers for each source."
+
+  val sinkNotFoundError: String = "Sink %s does not appear in your test sinks.  Make sure " +
+    "each sink in your job has a corresponding sink in the test sinks that is EXACTLY " +
+    "equal.  Call the '.sink' method on your JobTest to add test buffers for each sink."
 
   def apply(src: Source, fields: Fields, sinkMode: SinkMode = SinkMode.REPLACE): TestTapFactory = new TestTapFactory(src, sinkMode) {
     override def sourceFields: Fields = fields
@@ -68,9 +68,14 @@ class TestTapFactory(src: Source, sinkMode: SinkMode) extends Serializable {
         * to access this.  You must explicitly name each of your test sources in your
         * JobTest.
         */
+        val errorMsg = readOrWrite match {
+          case Read => TestTapFactory.sourceNotFoundError
+          case Write => TestTapFactory.sinkNotFoundError
+        }
+
         require(
           buffers(src).isDefined,
-          TestTapFactory.sourceNotFoundError.format(src))
+          errorMsg.format(src))
         val buffer =
           if (readOrWrite == Write) {
             val buf = buffers(src).get
@@ -94,12 +99,12 @@ class TestTapFactory(src: Source, sinkMode: SinkMode) extends Serializable {
               val fields = sourceFields
               (new MemorySourceTap(buffer.toList.asJava, fields)).asInstanceOf[Tap[JobConf, _, _]]
             } else {
-              CastHfsTap(new Hfs(hdfsScheme.get, hdfsTest.getWritePathFor(src), sinkMode))
+              CastHfsTap(new ScaldingHfs(hdfsScheme.get, hdfsTest.getWritePathFor(src), sinkMode))
             }
           }
           case Write => {
             val path = hdfsTest.getWritePathFor(src)
-            CastHfsTap(new Hfs(hdfsScheme.get, path, sinkMode))
+            CastHfsTap(new ScaldingHfs(hdfsScheme.get, path, sinkMode))
           }
         }
       case _ => {

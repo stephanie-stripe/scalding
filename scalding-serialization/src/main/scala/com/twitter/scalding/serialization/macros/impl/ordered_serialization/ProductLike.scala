@@ -15,10 +15,7 @@
  */
 package com.twitter.scalding.serialization.macros.impl.ordered_serialization
 
-import scala.language.experimental.macros
 import scala.reflect.macros.blackbox.Context
-
-import com.twitter.scalding._
 
 object ProductLike {
   def compareBinary(c: Context)(inputStreamA: c.TermName, inputStreamB: c.TermName)(
@@ -67,7 +64,7 @@ object ProductLike {
     }
 
     q"""
-      var $currentHash: Int = _root_.com.twitter.scalding.serialization.MurmurHashUtils.seed
+      var $currentHash: _root_.scala.Int = _root_.com.twitter.scalding.serialization.MurmurHashUtils.seed
       ..${hashUpdates}
       _root_.com.twitter.scalding.serialization.MurmurHashUtils.fmix($currentHash, ${elementData.size})
     """
@@ -173,7 +170,7 @@ object ProductLike {
         case (tpe, accessorSymbol, tBuf) =>
           val curCmp = freshT("curCmp")
           val cmpTree = q"""
-            val $curCmp: Int = {
+            val $curCmp: _root_.scala.Int = {
               val $innerElementA = $elementA.$accessorSymbol
               val $innerElementB = $elementB.$accessorSymbol
               ${tBuf.compare(innerElementA, innerElementB)}

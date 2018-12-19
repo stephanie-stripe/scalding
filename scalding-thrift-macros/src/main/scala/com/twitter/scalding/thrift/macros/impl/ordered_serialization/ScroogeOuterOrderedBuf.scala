@@ -18,7 +18,6 @@ package com.twitter.scalding.thrift.macros.impl.ordered_serialization
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization._
 import com.twitter.scrooge.{ ThriftStruct, ThriftUnion }
 
-import scala.language.experimental.macros
 import scala.reflect.macros.Context
 
 /*
@@ -45,7 +44,7 @@ object ScroogeOuterOrderedBuf {
     val variableID = (outerType.typeSymbol.fullName.hashCode.toLong + Int.MaxValue.toLong).toString
     val variableNameStr = s"bufferable_$variableID"
     val variableName = newTermName(variableNameStr)
-    val implicitInstanciator = q"""implicitly[_root_.com.twitter.scalding.serialization.OrderedSerialization[$outerType]]"""
+    val implicitInstanciator = q"""_root_.scala.Predef.implicitly[_root_.com.twitter.scalding.serialization.OrderedSerialization[$outerType]]"""
 
     new TreeOrderedBuf[c.type] {
       override val ctx: c.type = c
@@ -60,12 +59,12 @@ object ScroogeOuterOrderedBuf {
       override def length(element: Tree) =
         CompileTimeLengthTypes.MaybeLengthCalculation(c)(q"""
           ($variableName.staticSize match {
-            case Some(s) => _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.ConstLen(s)
-            case None =>
+            case _root_.scala.Some(s) => _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.ConstLen(s)
+            case _root_.scala.None =>
               $variableName.dynamicSize($element) match {
-                case Some(s) =>
+                case _root_.scala.Some(s) =>
                 _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.DynamicLen(s)
-                case None =>
+                case _root_.scala.None =>
                   _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.NoLengthCalculation
               }
           }): _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.MaybeLength

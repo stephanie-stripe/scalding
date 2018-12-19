@@ -15,10 +15,9 @@ limitations under the License.
 */
 package com.twitter.scalding
 
-import org.scalatest.{ FunSuite, Matchers, WordSpec }
-
-import com.twitter.algebird.Monoid
-import com.twitter.scalding.source.TypedText
+import org.scalatest.{FunSuite, Matchers, WordSpec}
+import com.twitter.scalding.source.{FixedTypedText, TypedText}
+import scala.collection.mutable
 // Use the scalacheck generators
 import org.scalacheck.Gen
 import scala.collection.mutable.Buffer
@@ -43,7 +42,6 @@ class TupleAdderJob(args: Args) extends Job(args) {
 }
 
 class TupleAdderTest extends WordSpec with Matchers {
-  import Dsl._
   "A TupleAdderJob" should {
     JobTest(new TupleAdderJob(_))
       .source(TypedText.tsv[(String, String)]("input"), List(("a", "a"), ("b", "b")))
@@ -72,7 +70,6 @@ class TypedPipeJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipe" should {
     var idx = 0
     TUtil.printStack {
@@ -122,15 +119,6 @@ class TypedSumByKeyTest extends WordSpec with Matchers {
   }
 }
 
-class TypedPipeMonoidTest extends WordSpec with Matchers {
-  "typedPipeMonoid.zero" should {
-    "be equal to TypePipe.empty" in {
-      val mon = implicitly[Monoid[TypedPipe[Int]]]
-      assert(mon.zero == TypedPipe.empty)
-    }
-  }
-}
-
 class TypedPipeSortByJob(args: Args) extends Job(args) {
   TypedPipe.from(TypedText.tsv[(Int, Float, String)]("input"))
     .groupBy(_._1)
@@ -171,7 +159,6 @@ class TypedPipeJoinJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeJoinTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeJoin" should {
     JobTest(new com.twitter.scalding.TypedPipeJoinJob(_))
       .source(Tsv("inputFile0"), List((0, 0), (1, 1), (2, 2), (3, 3), (4, 5)))
@@ -242,7 +229,6 @@ class TypedPipeDistinctJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeDistinctTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeDistinctJob" should {
     JobTest(new TypedPipeDistinctJob(_))
       .source(Tsv("inputFile"), List((0, 0), (1, 1), (2, 2), (2, 2), (2, 5)))
@@ -265,7 +251,6 @@ class TypedPipeDistinctWordsJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeDistinctWordsTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeDistinctWordsJob" should {
     var idx = 0
     JobTest(new TypedPipeDistinctWordsJob(_))
@@ -289,7 +274,6 @@ class TypedPipeDistinctByJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeDistinctByTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeDistinctByJob" should {
     JobTest(new TypedPipeDistinctByJob(_))
       .source(Tsv("inputFile"), List((0, 1), (1, 1), (2, 2), (2, 2), (2, 5)))
@@ -318,7 +302,6 @@ class TypedPipeGroupedDistinctJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeGroupedDistinctJobTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeGroupedDistinctJob" should {
     JobTest(new TypedPipeGroupedDistinctJob(_))
       .source(Tsv("inputFile"), List((0, 0), (0, 1), (0, 1), (1, 0), (1, 1)))
@@ -348,7 +331,6 @@ class TypedPipeHashJoinJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeHashJoinTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipeHashJoinJob" should {
     JobTest(new TypedPipeHashJoinJob(_))
       .source(TypedText.tsv[(Int, Int)]("inputFile0"), List((0, 0), (1, 1), (2, 2), (3, 3), (4, 5)))
@@ -388,7 +370,6 @@ class TypedImplicitJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeTypedTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedImplicitJob" should {
     JobTest(new TypedImplicitJob(_))
       .source(TextLine("inputFile"), List("0" -> "hack hack hack and hack"))
@@ -454,7 +435,6 @@ class TypedPipeWithOuterAndLeftJoin(args: Args) extends Job(args) {
 }
 
 class TypedPipeWithOuterAndLeftJoinTest extends WordSpec with Matchers {
-  import Dsl._
 
   "A TypedPipeWithOuterAndLeftJoin" should {
     JobTest(new TypedPipeWithOuterAndLeftJoin(_))
@@ -610,7 +590,6 @@ class TCrossJob(args: Args) extends Job(args) {
 }
 
 class TypedPipeCrossTest extends WordSpec with Matchers {
-  import Dsl._
   "A TCrossJob" should {
     var idx = 0
     TUtil.printStack {
@@ -645,7 +624,6 @@ class TJoinTakeJob(args: Args) extends Job(args) {
 }
 
 class TypedJoinTakeTest extends WordSpec with Matchers {
-  import Dsl._
   "A TJoinTakeJob" should {
     var idx = 0
     TUtil.printStack {
@@ -675,7 +653,6 @@ class TGroupAllJob(args: Args) extends Job(args) {
 }
 
 class TypedGroupAllTest extends WordSpec with Matchers {
-  import Dsl._
   "A TGroupAllJob" should {
     var idx = 0
     TUtil.printStack {
@@ -703,7 +680,6 @@ class TSelfJoin(args: Args) extends Job(args) {
 }
 
 class TSelfJoinTest extends WordSpec with Matchers {
-  import Dsl._
   "A TSelfJoin" should {
     JobTest(new TSelfJoin(_))
       .source(TypedText.tsv[(Int, Int)]("in"), List((1, 2), (1, 3), (2, 1)))
@@ -739,7 +715,6 @@ class TJoinWordCount(args: Args) extends Job(args) {
 }
 
 class TypedJoinWCTest extends WordSpec with Matchers {
-  import Dsl._
   "A TJoinWordCount" should {
     TUtil.printStack {
       val in0 = List((0, "you all everybody"), (1, "a b c d"), (2, "a b c"))
@@ -776,7 +751,6 @@ class TypedLimitJob(args: Args) extends Job(args) {
 }
 
 class TypedLimitTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedLimitJob" should {
     JobTest(new TypedLimitJob(_))
       .source(TypedText.tsv[String]("input"), (0 to 100).map { i => Tuple1(i.toString) })
@@ -797,7 +771,6 @@ class TypedFlattenJob(args: Args) extends Job(args) {
 }
 
 class TypedFlattenTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedLimitJob" should {
     JobTest(new TypedFlattenJob(_))
       .source(TypedText.tsv[String]("input"), List(Tuple1("you all"), Tuple1("every body")))
@@ -821,7 +794,6 @@ class TypedMergeJob(args: Args) extends Job(args) {
 }
 
 class TypedMergeTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedMergeJob" should {
     var idx = 0
     JobTest(new TypedMergeJob(_))
@@ -853,7 +825,6 @@ class TypedShardJob(args: Args) extends Job(args) {
 }
 
 class TypedShardTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedShardJob" should {
     val genList = Gen.listOf(Gen.identifier)
     // Take one random sample
@@ -879,7 +850,6 @@ class TypedLocalSumJob(args: Args) extends Job(args) {
 }
 
 class TypedLocalSumTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedLocalSumJob" should {
     var idx = 0
     val genList = Gen.listOf(Gen.identifier)
@@ -911,7 +881,6 @@ class TypedHeadJob(args: Args) extends Job(args) {
 }
 
 class TypedHeadTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedHeadJob" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -949,7 +918,6 @@ class TypedSortWithTakeJob(args: Args) extends Job(args) {
 }
 
 class TypedSortWithTakeTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedSortWithTakeJob" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -982,7 +950,6 @@ class TypedLookupJob(args: Args) extends Job(args) {
 }
 
 class TypedLookupJobTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedLookupJob" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -1014,7 +981,6 @@ class TypedLookupReduceJob(args: Args) extends Job(args) {
 }
 
 class TypedLookupReduceJobTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedLookupJob" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -1050,7 +1016,6 @@ class TypedFilterJob(args: Args) extends Job(args) {
 }
 
 class TypedFilterTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipe" should {
     "filter and filterNot elements" in {
       val input = -1 to 100
@@ -1078,7 +1043,6 @@ class TypedPartitionJob(args: Args) extends Job(args) {
 }
 
 class TypedPartitionTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedPipe" should {
     "partition elements" in {
       val input = -1 to 100
@@ -1119,7 +1083,6 @@ class TypedMultiJoinJob(args: Args) extends Job(args) {
 }
 
 class TypedMultiJoinJobTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedMultiJoinJob" should {
     val rng = new java.util.Random
     val COUNT = 100 * 100
@@ -1185,7 +1148,6 @@ class TypedMultiSelfJoinJob(args: Args) extends Job(args) {
 }
 
 class TypedMultiSelfJoinJobTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedMultiSelfJoinJob" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -1240,7 +1202,6 @@ class TypedMapGroup(args: Args) extends Job(args) {
 }
 
 class TypedMapGroupTest extends WordSpec with Matchers {
-  import Dsl._
   "A TypedMapGroup" should {
     val rng = new java.util.Random
     val COUNT = 10000
@@ -1275,7 +1236,6 @@ class TypedSelfCrossJob(args: Args) extends Job(args) {
 }
 
 class TypedSelfCrossTest extends WordSpec with Matchers {
-  import Dsl._
 
   val input = (1 to 100).toList
 
@@ -1304,7 +1264,6 @@ class TypedSelfLeftCrossJob(args: Args) extends Job(args) {
 }
 
 class TypedSelfLeftCrossTest extends WordSpec with Matchers {
-  import Dsl._
 
   val input = (1 to 100).toList
 
@@ -1336,7 +1295,6 @@ class JoinMapGroupJob(args: Args) extends Job(args) {
 }
 
 class JoinMapGroupJobTest extends WordSpec with Matchers {
-  import Dsl._
 
   "A JoinMapGroupJob" should {
     JobTest(new JoinMapGroupJob(_))
@@ -1436,7 +1394,6 @@ class TypedSketchLeftJoinJob(args: Args) extends Job(args) {
 }
 
 object TypedSketchJoinTestHelper {
-  import Dsl._
 
   val rng = new java.util.Random
   def generateInput(size: Int, max: Int, dist: (Int) => Int): List[(Int, Int)] = {
@@ -1467,7 +1424,6 @@ object TypedSketchJoinTestHelper {
 }
 
 class TypedSketchJoinJobTest extends WordSpec with Matchers {
-  import Dsl._
   import TypedSketchJoinTestHelper._
 
   "A TypedSketchJoinJob" should {
@@ -1499,7 +1455,6 @@ class TypedSketchJoinJobTest extends WordSpec with Matchers {
 }
 
 class TypedSketchLeftJoinJobTest extends WordSpec with Matchers {
-  import Dsl._
   import TypedSketchJoinTestHelper._
 
   "A TypedSketchLeftJoinJob" should {
@@ -1547,5 +1502,39 @@ class TypedPipeRequireTest extends FunSuite {
 
     assert(ex(false).waitFor(Config.empty, Local(true)).get.toList.sorted ==
       ex(true).waitFor(Config.empty, Local(true)).get.toList.sorted)
+  }
+}
+
+object TypedPipeConverterTest {
+  class TypedTsvWithCustomConverter[T: TypeDescriptor](nonSerializableObj: Any, path: String*) extends FixedTypedText[T](TypedText.TAB, path: _*) {
+    override def converter[U >: T]: TupleConverter[U] =
+      super.converter.andThen { t: T => nonSerializableObj; t }
+  }
+
+  class NonSerializableObj
+
+  val source = new TypedTsvWithCustomConverter[Int](new NonSerializableObj(), "input")
+
+  class JobWithCustomConverter(args: Args) extends Job(args) {
+    TypedPipe.from(source)
+      .map(i => i + 1)
+      .write(TypedText.tsv[Int]("output"))
+  }
+}
+
+class TypedPipeConverterTest extends FunSuite {
+  import TypedPipeConverterTest._
+
+  test("any converter should be serializable") {
+    val expected = mutable.Buffer[Int](0 to 10: _*)
+    val result = mutable.Buffer[Int]()
+
+    JobTest(new JobWithCustomConverter(_))
+      .source(source, expected.map(_ - 1))
+      .typedSink(TypedText.tsv[Int]("output")) { outBuf => result ++= outBuf }
+      .runHadoop
+      .finish()
+
+    assert(result == expected)
   }
 }

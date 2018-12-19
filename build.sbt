@@ -9,36 +9,36 @@ import scala.collection.JavaConverters._
 import scalariform.formatter.preferences._
 
 def scalaBinaryVersion(scalaVersion: String) = scalaVersion match {
-  case version if version startsWith "2.10" => "2.10"
   case version if version startsWith "2.11" => "2.11"
   case version if version startsWith "2.12" => "2.12"
   case _ => sys.error("unknown error")
 }
-
 val algebirdVersion = "0.13.4"
 val apacheCommonsVersion = "2.2"
 val avroVersion = "1.7.4"
 val bijectionVersion = "0.9.5"
 val cascadingAvroVersion = "2.1.2"
+val catsEffectVersion = "1.1.0"
+val catsVersion = "1.5.0"
 val chillVersion = "0.8.4"
 val dagonVersion = "0.3.1"
 val elephantbirdVersion = "4.15"
 val hadoopLzoVersion = "0.4.19"
 val hadoopVersion = "2.5.0"
-val hbaseVersion = "0.94.10"
+val hbaseVersion = "1.2.4"
 val hravenVersion = "1.0.1"
 val jacksonVersion = "2.8.7"
 val json4SVersion = "3.5.0"
 val paradiseVersion = "2.1.0"
-val parquetVersion = "1.8.1"
+val parquetVersion = "1.10.0"
 val protobufVersion = "2.4.1"
 val scalameterVersion = "0.8.2"
 val scalaCheckVersion = "1.13.4"
 val scalaTestVersion = "3.0.1"
-val scroogeVersion = "4.12.0"
-val sparkVersion = "2.0.0"
+val scroogeVersion = "18.9.0"
+val sparkVersion = "2.4.0"
 val slf4jVersion = "1.6.6"
-val thriftVersion = "0.5.0"
+val thriftVersion = "0.9.3"
 val junitVersion = "4.10"
 val macroCompatVersion = "1.1.1"
 val jlineVersion = "2.14.3"
@@ -48,9 +48,9 @@ val printDependencyClasspath = taskKey[Unit]("Prints location of the dependencie
 val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
   organization := "com.twitter",
 
-  scalaVersion := "2.11.11",
+  scalaVersion := "2.11.12",
 
-  crossScalaVersions := Seq(scalaVersion.value, "2.12.3"),
+  crossScalaVersions := Seq(scalaVersion.value, "2.12.4"),
 
   ScalariformKeys.preferences := formattingPreferences,
 
@@ -103,7 +103,8 @@ val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
       "-deprecation",
       "-language:implicitConversions",
       "-language:higherKinds",
-      "-language:existentials"
+      "-language:existentials",
+      "-Ywarn-unused-import"
     ),
 
   scalacOptions in(Compile, doc) ++= Seq(scalaVersion.value).flatMap {
@@ -220,6 +221,7 @@ lazy val scalding = Project(
   scaldingArgs,
   scaldingDate,
   scaldingQuotation,
+  scaldingCats,
   scaldingCore,
   scaldingCommons,
   scaldingAvro,
@@ -348,9 +350,20 @@ lazy val scaldingCore = module("core").settings(
   addCompilerPlugin("org.scalamacros" % "paradise" % paradiseVersion cross CrossVersion.full)
 ).dependsOn(scaldingArgs, scaldingDate, scaldingSerialization, maple, scaldingQuotation)
 
+lazy val scaldingCats = module("cats").settings(
+  libraryDependencies ++= Seq(
+    "org.apache.hadoop" % "hadoop-client" % hadoopVersion % "provided",
+    "org.typelevel" %% "cats-core" % catsVersion,
+    "org.typelevel" %% "cats-laws" % catsVersion % "test",
+    "org.typelevel" %% "cats-effect" % catsEffectVersion,
+    "org.typelevel" %% "cats-effect-laws" % catsEffectVersion % "test"
+  )).dependsOn(scaldingArgs, scaldingDate, scaldingCore)
+
+
 lazy val scaldingSpark = module("spark").settings(
   libraryDependencies ++= Seq(
-    "org.apache.spark" %% "spark-core" % sparkVersion
+    "org.apache.spark" %% "spark-core" % sparkVersion,
+    "org.apache.spark" %% "spark-sql" % sparkVersion
     )
   ).dependsOn(scaldingCore)
 
@@ -407,7 +420,7 @@ lazy val scaldingParquet = module("parquet").settings(
       exclude("com.twitter.elephantbird", "elephant-bird-pig")
       exclude("com.twitter.elephantbird", "elephant-bird-core"),
     "org.scala-lang" % "scala-compiler" % scalaVersion.value,
-    "org.apache.thrift" % "libthrift" % "0.7.0",
+    "org.apache.thrift" % "libthrift" % thriftVersion,
     "org.slf4j" % "slf4j-api" % slf4jVersion,
     "org.apache.hadoop" % "hadoop-client" % hadoopVersion % "provided",
     "org.scala-lang" % "scala-reflect" % scalaVersion.value,
@@ -469,6 +482,9 @@ lazy val scaldingHRaven = module("hraven").settings(
       exclude("com.twitter.common", "args")
       exclude("com.twitter.common", "application"),
     "org.apache.hbase" % "hbase" % hbaseVersion,
+    "org.apache.hbase" % "hbase-client" % hbaseVersion % "provided",
+    "org.apache.hbase" % "hbase-common" % hbaseVersion % "provided",
+    "org.apache.hbase" % "hbase-server" % hbaseVersion % "provided",
     "org.slf4j" % "slf4j-api" % slf4jVersion,
     "org.apache.hadoop" % "hadoop-client" % hadoopVersion % "provided"
   )
@@ -579,11 +595,13 @@ lazy val maple = Project(
   mimaPreviousArtifacts := Set.empty,
   crossPaths := false,
   autoScalaLibrary := false,
-  // Disable cross publishing for this artifact
-  publishArtifact := !scalaVersion.value.startsWith("2.10"),
+  publishArtifact := true,
   libraryDependencies ++= Seq(
     "org.apache.hadoop" % "hadoop-client" % hadoopVersion % "provided",
     "org.apache.hbase" % "hbase" % hbaseVersion % "provided",
+    "org.apache.hbase" % "hbase-client" % hbaseVersion % "provided",
+    "org.apache.hbase" % "hbase-common" % hbaseVersion % "provided",
+    "org.apache.hbase" % "hbase-server" % hbaseVersion % "provided",
     "cascading" % "cascading-hadoop" % cascadingVersion
   )
 )

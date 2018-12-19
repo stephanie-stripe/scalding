@@ -15,11 +15,8 @@
  */
 package com.twitter.scalding.serialization.macros.impl.ordered_serialization.providers
 
-import scala.language.experimental.macros
 import scala.reflect.macros.blackbox.Context
 
-import com.twitter.scalding._
-import com.twitter.scalding.serialization.OrderedSerialization
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization._
 
 /*
@@ -29,7 +26,6 @@ import com.twitter.scalding.serialization.macros.impl.ordered_serialization._
 object ImplicitOrderedBuf {
 
   def dispatch(c: Context): PartialFunction[c.Type, TreeOrderedBuf[c.type]] = {
-    import c.universe._
     val pf: PartialFunction[c.Type, TreeOrderedBuf[c.type]] = {
       case tpe => ImplicitOrderedBuf(c)(tpe)
     }
@@ -60,12 +56,12 @@ object ImplicitOrderedBuf {
       override def length(element: Tree) =
         CompileTimeLengthTypes.MaybeLengthCalculation(c)(q"""
           ($variableName.staticSize match {
-            case Some(s) => _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.ConstLen(s)
-            case None =>
+            case _root_.scala.Some(s) => _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.ConstLen(s)
+            case _root_.scala.None =>
               $variableName.dynamicSize($element) match {
-                case Some(s) =>
+                case _root_.scala.Some(s) =>
                 _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.DynamicLen(s)
-                case None =>
+                case _root_.scala.None =>
                   _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.NoLengthCalculation
               }
           }): _root_.com.twitter.scalding.serialization.macros.impl.ordered_serialization.runtime_helpers.MaybeLength

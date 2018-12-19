@@ -15,17 +15,13 @@
  */
 package com.twitter.scalding.serialization.macros.impl.ordered_serialization.providers
 
-import scala.language.experimental.macros
 import scala.reflect.macros.blackbox.Context
 
-import com.twitter.scalding._
 import com.twitter.scalding.serialization.macros.impl.ordered_serialization.{
   CompileTimeLengthTypes,
-  ProductLike,
   TreeOrderedBuf
 }
 import CompileTimeLengthTypes._
-import com.twitter.scalding.serialization.OrderedSerialization
 
 object OptionOrderedBuf {
   def dispatch(c: Context)(buildDispatcher: => PartialFunction[c.Type, TreeOrderedBuf[c.type]]): PartialFunction[c.Type, TreeOrderedBuf[c.type]] = {
@@ -75,8 +71,8 @@ object OptionOrderedBuf {
       val tmpGetHolder = freshT("tmpGetHolder")
       q"""
         val $tmpGetHolder = $inputStreamA.readByte
-        if($tmpGetHolder == (0: _root_.scala.Byte)) None
-        else Some(${innerBuf.get(inputStreamA)})
+        if($tmpGetHolder == (0: _root_.scala.Byte)) _root_.scala.None
+        else _root_.scala.Some(${innerBuf.get(inputStreamA)})
       """
     }
 

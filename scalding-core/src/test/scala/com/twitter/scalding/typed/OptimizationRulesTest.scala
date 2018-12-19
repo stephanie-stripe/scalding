@@ -3,15 +3,13 @@ package com.twitter.scalding.typed
 import cascading.flow.FlowDef
 import cascading.tuple.Fields
 import com.stripe.dagon.{ Dag, Rule }
-import com.twitter.scalding.WritableSequenceFile
+import com.twitter.algebird.Monoid
 import com.twitter.scalding.source.{ TypedText, NullSink }
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.io.Writable
-import com.twitter.scalding.{ Config, ExecutionContext, Local, Hdfs, FlowState, FlowStateMap, IterableSource, TupleConverter }
+import com.twitter.scalding.{ Config, ExecutionContext, Local, Hdfs, FlowState, FlowStateMap, IterableSource }
 import com.twitter.scalding.typed.cascading_backend.CascadingBackend
 import org.scalatest.FunSuite
 import org.scalatest.prop.PropertyChecks
-import org.scalatest.prop.GeneratorDrivenPropertyChecks.PropertyCheckConfiguration
 import org.scalacheck.{ Arbitrary, Gen }
 import scala.util.{ Failure, Success, Try }
 
@@ -195,7 +193,7 @@ object TypedPipeGen {
     val pipe = CascadingBackend.toPipeUnoptimized(p, NullSink.sinkFields)(fd, mode, NullSink.setter)
     NullSink.writeFrom(pipe)(fd, mode)
     val ec = ExecutionContext.newContext(Config.defaultFrom(mode))(fd, mode)
-    val flow = ec.buildFlow.get
+    val flow = ec.buildFlow.get.get
     flow.getFlowSteps.size
   }
 
@@ -255,7 +253,7 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
   }
 
   test("standard rules are reproducible") {
-    import TypedPipeGen.{ genWithFakeSources, genRule }
+    import TypedPipeGen.genWithFakeSources
 
     implicit val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 500)
     forAll(genWithFakeSources) { t =>
@@ -634,5 +632,16 @@ class OptimizationRulesTest extends FunSuite with PropertyChecks {
     optimizedSteps(OptimizationRules.standardMapReduceRules, 1)(pipe2)
     optimizedSteps(OptimizationRules.standardMapReduceRules, 2)(pipe3)
     optimizedSteps(OptimizationRules.standardMapReduceRules, 1)(pipe4)
+  }
+
+  test("we can plan an enormous list of combined typedPipes") {
+    // set this to 10,000 and use the default Monoid.plus
+    // and this fails fast, but still planning a giant graph
+    // is quadratic to apply the optimizations, so it takes
+    // a long time, but does not stack overflow.
+    val pipes = (0 to 1000).map(i => TypedPipe.from(List(i)))
+    val pipe = Monoid.sum(pipes)
+
+    optimizedSteps(OptimizationRules.standardMapReduceRules, 1)(pipe)
   }
 }

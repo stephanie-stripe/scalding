@@ -16,7 +16,7 @@ limitations under the License.
 package com.twitter.scalding
 
 import cascading.flow.{ FlowDef, Flow }
-import com.stripe.dagon.{ Dag, Id, Rule, HMap }
+import com.stripe.dagon.{ Dag, Id, Rule }
 import com.twitter.algebird.monad.Trampoline
 import com.twitter.algebird.{ Monoid, Monad, Semigroup }
 import com.twitter.scalding.cascading_interop.FlowListenerPromise
@@ -28,7 +28,6 @@ import java.io.Serializable
 import java.util.UUID
 import scala.collection.mutable
 import scala.concurrent.{ Await, Future, ExecutionContext => ConcurrentExecutionContext, Promise }
-import scala.runtime.ScalaRunTime
 import scala.util.{ Failure, Success, Try }
 import scala.util.hashing.MurmurHash3
 
@@ -151,8 +150,16 @@ sealed trait Execution[+T] extends Serializable { self: Product =>
     val writer: Execution.Writer = mode.newWriter()
     val ec = new EvalCache(writer)
     val confWithId = conf.setScaldingExecutionId(UUID.randomUUID.toString)
+
+    val exec =
+      if (conf.getExecutionOptimization) {
+        ExecutionOptimizationRules.stdOptimizations(this)
+      } else {
+        this
+      }
+
     // get on Trampoline
-    val result = runStats(confWithId, mode, ec)(cec).get.map(_._1)
+    val result = exec.runStats(confWithId, mode, ec)(cec).get.map(_._1)
     // When the final future in complete we stop the submit thread
     result.onComplete { _ => writer.finished() }
     // wait till the end to start the thread in case the above throws
@@ -365,14 +372,14 @@ object Execution {
 
     type Counters = Map[Long, ExecutionCounters]
     private[this] val cache = new FutureCache[(Config, Execution[Any]), (Any, Counters)]
-    private[this] val toWriteCache = new FutureCache[(Config, ToWrite), Counters]
+    private[this] val toWriteCache = new FutureCache[(Config, ToWrite[_]), Counters]
 
     // This method with return a 'clean' cache, that shares
     // the underlying thread and message queue of the parent evalCache
     def cleanCache: EvalCache =
       new EvalCache(writer)
 
-    def getOrLock(cfg: Config, write: ToWrite): Either[Promise[Counters], Future[Counters]] =
+    def getOrLock(cfg: Config, write: ToWrite[_]): Either[Promise[Counters], Future[Counters]] =
       toWriteCache.getOrPromise((cfg, write))
 
     def getOrElseInsertWithFeedback[T](cfg: Config, ex: Execution[T],
@@ -387,7 +394,7 @@ object Execution {
   }
 
 
-  private final case class FutureConst[T](get: ConcurrentExecutionContext => Future[T]) extends Execution[T] {
+  private[scalding] final case class FutureConst[T](get: ConcurrentExecutionContext => Future[T]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline(cache.getOrElseInsert(conf, this,
         for {
@@ -398,7 +405,7 @@ object Execution {
     // Note that unit is not optimized away, since Futures are often used with side-effects, so,
     // we ensure that get is always called in contrast to Mapped, which assumes that fn is pure.
   }
-  private final case class FlatMapped[S, T](prev: Execution[S], fn: S => Execution[T]) extends Execution[T] {
+  private[scalding] final case class FlatMapped[S, T](prev: Execution[S], fn: S => Execution[T]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { fut1 =>
         cache.getOrElseInsert(conf, this,
@@ -410,7 +417,7 @@ object Execution {
       }
   }
 
-  private final case class Mapped[S, T](prev: Execution[S], fn: S => T) extends Execution[T] {
+  private[scalding] final case class Mapped[S, T](prev: Execution[S], fn: S => T) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { fut =>
         cache.getOrElseInsert(conf, this,
@@ -418,7 +425,7 @@ object Execution {
       }
   }
 
-  private final case class GetCounters[T](prev: Execution[T]) extends Execution[(T, ExecutionCounters)] {
+  private[scalding] final case class GetCounters[T](prev: Execution[T]) extends Execution[(T, ExecutionCounters)] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { fut =>
         cache.getOrElseInsert(conf, this,
@@ -429,7 +436,7 @@ object Execution {
           })
       }
   }
-  private final case class ResetCounters[T](prev: Execution[T]) extends Execution[T] {
+  private[scalding] final case class ResetCounters[T](prev: Execution[T]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { fut =>
         cache.getOrElseInsert(conf, this,
@@ -437,7 +444,7 @@ object Execution {
       }
   }
 
-  private final case class TransformedConfig[T](prev: Execution[T], fn: Config => Config) extends Execution[T] {
+  private[scalding] final case class TransformedConfig[T](prev: Execution[T], fn: Config => Config) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) = {
       val mutatedConfig = fn(conf)
       Trampoline.call(prev.runStats(mutatedConfig, mode, cache))
@@ -456,14 +463,14 @@ object Execution {
    * We operate here by getting a copy of the super EvalCache, without its cache's.
    * This is so we can share the singleton thread for scheduling jobs against Cascading.
    */
-  private final case class WithNewCache[T](prev: Execution[T]) extends Execution[T] {
+  private[scalding] final case class WithNewCache[T](prev: Execution[T]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) = {
       val ec = cache.cleanCache
       Trampoline.call(prev.runStats(conf, mode, ec))
     }
   }
 
-  private final case class OnComplete[T](prev: Execution[T], fn: Try[T] => Unit) extends Execution[T] {
+  private[scalding] final case class OnComplete[T](prev: Execution[T], fn: Try[T] => Unit) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { res =>
         cache.getOrElseInsert(conf, this, {
@@ -485,7 +492,7 @@ object Execution {
       }
   }
 
-  private final case class RecoverWith[T](prev: Execution[T], fn: PartialFunction[Throwable, Execution[T]]) extends Execution[T] {
+  private[scalding] final case class RecoverWith[T](prev: Execution[T], fn: PartialFunction[Throwable, Execution[T]]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline.call(prev.runStats(conf, mode, cache)).map { fut =>
         cache.getOrElseInsert(conf, this,
@@ -560,7 +567,7 @@ object Execution {
     }
   }
 
-  private final case class Zipped[S, T](one: Execution[S], two: Execution[T]) extends Execution[(S, T)] {
+  private[scalding] final case class Zipped[S, T](one: Execution[S], two: Execution[T]) extends Execution[(S, T)] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       for {
         f1 <- Trampoline.call(one.runStats(conf, mode, cache))
@@ -571,7 +578,7 @@ object Execution {
             .map { case ((s, ss), (t, st)) => ((s, t), ss ++ st) })
       }
   }
-  private final case class UniqueIdExecution[T](fn: UniqueID => Execution[T]) extends Execution[T] {
+  private[scalding] final case class UniqueIdExecution[T](fn: UniqueID => Execution[T]) extends Execution[T] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) = {
       Trampoline(cache.getOrElseInsert(conf, this, {
         val (uid, nextConf) = conf.ensureUniqueId
@@ -582,16 +589,16 @@ object Execution {
   /*
    * This allows you to run any cascading flowDef as an Execution.
    */
-  private final case class FlowDefExecution(result: (Config, Mode) => FlowDef) extends Execution[Unit] {
+  private[scalding] final case class FlowDefExecution(result: (Config, Mode) => FlowDef) extends Execution[Unit] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) = {
       lazy val future = {
         cache.writer match {
           case ar: AsyncFlowDefRunner =>
-            ar.validateAndRun(conf, mode)(result).map { m => ((), Map(m)) }
+            ar.validateAndRun(conf)(result(_, mode)).map { m => ((), Map(m)) }
           case other =>
             Future.failed(
-              new Exception(
-                s"requires AsyncFlowDefRunner, found ${other.getClass}: $other"))
+              new IllegalArgumentException(
+                s"requires cascading Mode producing AsyncFlowDefRunner, found mode: $mode and writer ${other.getClass}: $other"))
         }
       }
 
@@ -607,35 +614,46 @@ object Execution {
    * but can safely ignore serializing planning objects for the same reasons mentioned in KryoHadoop.scala
    */
 
-  sealed trait ToWrite extends Serializable
+  sealed trait ToWrite[T] extends Serializable {
+    def pipe: TypedPipe[T]
+    def replacePipe(p: TypedPipe[T]): ToWrite[T] =
+      this match {
+        case ToWrite.Force(_) => ToWrite.Force(p)
+        case ToWrite.ToIterable(_) => ToWrite.ToIterable(p)
+        case ToWrite.SimpleWrite(_, sink) => ToWrite.SimpleWrite(p, sink)
+      }
+  }
   object ToWrite extends Serializable {
-    final case class Force[T](@transient pipe: TypedPipe[T]) extends ToWrite
-    final case class ToIterable[T](@transient pipe: TypedPipe[T]) extends ToWrite
-    final case class SimpleWrite[T](@transient pipe: TypedPipe[T], @transient sink: TypedSink[T]) extends ToWrite
+    final case class Force[T](@transient pipe: TypedPipe[T]) extends ToWrite[T]
+    final case class ToIterable[T](@transient pipe: TypedPipe[T]) extends ToWrite[T]
+    final case class SimpleWrite[T](@transient pipe: TypedPipe[T], @transient sink: TypedSink[T]) extends ToWrite[T]
+
+    final case class OptimizedWrite[F[_], T](@transient original: F[T], toWrite: ToWrite[T])
 
     /**
      * Optimize these writes into new writes and provide a mapping from
      * the original TypedPipe to the new TypedPipe
      */
-    def optimizeWriteBatch(writes: List[ToWrite], rules: Seq[Rule[TypedPipe]]): HMap[TypedPipe, TypedPipe] = {
+    def optimizeWriteBatch(writes: List[ToWrite[_]], rules: Seq[Rule[TypedPipe]]): List[OptimizedWrite[TypedPipe, _]] = {
       val dag = Dag.empty(typed.OptimizationRules.toLiteral)
-      val (d1, ws) = writes.foldLeft((dag, List.empty[Id[_]])) {
-        case ((dag, ws), Force(p)) =>
-          val (d1, id) = dag.addRoot(p)
-          (d1, id :: ws)
-        case ((dag, ws), ToIterable(p)) =>
-          val (d1, id) = dag.addRoot(p)
-          (d1, id :: ws)
-        case ((dag, ws), SimpleWrite(p, sink)) =>
-          val (d1, id) = dag.addRoot(p)
-          (d1, id :: ws)
+      val (d1, ws) = writes.foldLeft((dag, List.empty[OptimizedWrite[Id, _]])) {
+        case ((dag, ws), toWrite) =>
+          val (d1, id) = dag.addRoot(toWrite.pipe)
+          (d1, OptimizedWrite(id, toWrite) :: ws)
       }
       // now we optimize the graph
       val d2 = d1.applySeq(rules)
       // convert back to TypedPipe:
-      ws.foldLeft(HMap.empty[TypedPipe, TypedPipe]) {
-        case (cache, id) =>
-          cache + (d1.evaluate(id) -> d2.evaluate(id))
+      ws.foldLeft(List.empty[OptimizedWrite[TypedPipe, _]]) {
+        case (tail, optWrite) =>
+          def go[A](optWriteId: OptimizedWrite[Id, A]): OptimizedWrite[TypedPipe, A] = {
+            val idA = optWriteId.original
+            val origPipe = d1.evaluate(idA)
+            val optPipe = d2.evaluate(idA)
+            OptimizedWrite(original = origPipe,
+              toWrite = optWriteId.toWrite.replacePipe(optPipe))
+          }
+          go(optWrite) :: tail
       }
     }
   }
@@ -663,15 +681,13 @@ object Execution {
      */
     def execute(
       conf: Config,
-      mode: Mode,
-      writes: List[ToWrite])(implicit cec: ConcurrentExecutionContext): Future[(Long, ExecutionCounters)]
+      writes: List[ToWrite[_]])(implicit cec: ConcurrentExecutionContext): Future[(Long, ExecutionCounters)]
 
     /**
      * This should only be called after a call to execute
      */
     private[Execution] def getForced[T](
       conf: Config,
-      mode: Mode,
       initial: TypedPipe[T]
       )(implicit cec: ConcurrentExecutionContext): Future[TypedPipe[T]]
 
@@ -680,7 +696,6 @@ object Execution {
      */
     private[Execution] def getIterable[T](
       conf: Config,
-      mode: Mode,
       initial: TypedPipe[T]
       )(implicit cec: ConcurrentExecutionContext): Future[Iterable[T]]
   }
@@ -690,9 +705,9 @@ object Execution {
    * are based on on this one. By keeping the Pipe and the Sink, can inspect the Execution
    * DAG and optimize it later (a goal, but not done yet).
    */
-  private final case class WriteExecution[T](
-    head: ToWrite,
-    tail: List[ToWrite],
+  private[scalding] final case class WriteExecution[T](
+    head: ToWrite[_],
+    tail: List[ToWrite[_]],
     result: ((Config, Mode, Writer, ConcurrentExecutionContext)) => Future[T]) extends Execution[T] {
 
     /**
@@ -722,7 +737,7 @@ object Execution {
     // Anything not already ran we run as part of a single flow def, using their combined counters for the others
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) = {
       Trampoline(cache.getOrElseInsert(conf, this, {
-        val cacheLookup: List[(ToWrite, Either[Promise[Map[Long, ExecutionCounters]], Future[Map[Long, ExecutionCounters]]])] =
+        val cacheLookup: List[(ToWrite[_], Either[Promise[Map[Long, ExecutionCounters]], Future[Map[Long, ExecutionCounters]]])] =
           (head :: tail).map{ tw => (tw, cache.getOrLock(conf, tw)) }
         val (weDoOperation, someoneElseDoesOperation) = unwrapListEither(cacheLookup)
 
@@ -735,7 +750,7 @@ object Execution {
                 case all @ (h :: tail) =>
                   val futCounters: Future[Map[Long, ExecutionCounters]] =
                     cache.writer
-                      .execute(conf, mode, all.map(_._1))
+                      .execute(conf, all.map(_._1))
                       .map(Map(_))
 
                   // Complete all of the promises we put into the cache
@@ -760,6 +775,7 @@ object Execution {
       }))
     }
 
+
     /*
      * run this and that in parallel, without any dependency. This will
      * be done in a single cascading flow if possible.
@@ -775,13 +791,12 @@ object Execution {
           WriteExecution(head, h :: t ::: tail, newFn)
         case o => Zipped(this, that)
       }
-
   }
 
   /**
    * This is called Reader, because it just returns its input to run as the output
    */
-  private case object ReaderExecution extends Execution[(Config, Mode)] {
+  private[scalding] case object ReaderExecution extends Execution[(Config, Mode)] {
     protected def runStats(conf: Config, mode: Mode, cache: EvalCache)(implicit cec: ConcurrentExecutionContext) =
       Trampoline(Future.successful(((conf, mode), Map.empty)))
 
@@ -842,13 +857,13 @@ object Execution {
     WriteExecution(
       ToWrite.Force(t),
       Nil,
-      { case (conf, mode, w, cec) => w.getForced(conf, mode, t)(cec) })
+      { case (conf, _, w, cec) => w.getForced(conf, t)(cec) })
 
   def toIterable[T](t: TypedPipe[T]): Execution[Iterable[T]] =
     WriteExecution(
       ToWrite.ToIterable(t),
       Nil,
-      { case (conf, mode, w, cec) => w.getIterable(conf, mode, t)(cec) })
+      { case (conf, _, w, cec) => w.getIterable(conf, t)(cec) })
 
   /**
    * The simplest form, just sink the typed pipe into the sink and get a unit execution back
