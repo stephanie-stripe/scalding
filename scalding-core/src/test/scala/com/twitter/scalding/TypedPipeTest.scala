@@ -15,8 +15,8 @@ limitations under the License.
 */
 package com.twitter.scalding
 
-import org.scalatest.{FunSuite, Matchers, WordSpec}
-import com.twitter.scalding.source.{FixedTypedText, TypedText}
+import org.scalatest.{ FunSuite, Matchers, WordSpec }
+import com.twitter.scalding.source.{ FixedTypedText, TypedText }
 import scala.collection.mutable
 // Use the scalacheck generators
 import org.scalacheck.Gen
@@ -348,6 +348,19 @@ class TypedPipeHashJoinTest extends WordSpec with Matchers {
       }(implicitly[TypeDescriptor[(Int, (Int, Option[Int]))]].converter)
       .run
       .finish()
+  }
+}
+
+class TypedPipeTwoHashJoinsInARowTest extends WordSpec with Matchers {
+  "Two hashJoins" should {
+    "work correctly" in {
+      val elements = List(1, 2, 3)
+      val tp1 = TypedPipe.from(elements.map(v => (v, v)))
+      val tp2 = TypedPipe.from(elements.map(v => (v, 2 * v)))
+      val tp3 = TypedPipe.from(elements.map(v => (v, 3 * v)))
+      TypedPipeChecker.checkOutput(tp1.hashJoin(tp2).hashJoin(tp3))(result =>
+        result shouldBe elements.map(v => (v, ((v, 2 * v), 3 * v))))
+    }
   }
 }
 

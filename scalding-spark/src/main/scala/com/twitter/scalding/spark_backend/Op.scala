@@ -1,13 +1,14 @@
 package com.twitter.scalding.spark_backend
 
 import org.apache.spark.{HashPartitioner, Partitioner}
-import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd.{RDD, UnionRDD}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.storage.StorageLevel
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import com.twitter.scalding.{Config, FutureCache}
 import com.twitter.scalding.typed.TypedSource
+import SparkPlanner.PartitionComputer
 
 sealed abstract class Op[+A] {
   import Op.{Transformed, fakeClassTag}
@@ -35,9 +36,9 @@ object Op extends Serializable {
       Transformed[(K, V), (K, U)](op, _.flatMapValues(fn))
     def mapValues[U](fn: V => U): Op[(K, U)] =
       Transformed[(K, V), (K, U)](op, _.mapValues(fn))
-    def mapGroup[U](fn: (K, Iterator[V]) => Iterator[U])(implicit ordK: Ordering[K]): Op[(K, U)] =
+    def mapGroup[U](partitionComputer: PartitionComputer)(fn: (K, Iterator[V]) => Iterator[U])(implicit ordK: Ordering[K]): Op[(K, U)] =
       Transformed[(K, V), (K, U)](op, { rdd: RDD[(K, V)] =>
-        val numPartitions = rdd.getNumPartitions
+        val numPartitions = partitionComputer(rdd.getNumPartitions)
         val partitioner = rdd.partitioner.getOrElse(new HashPartitioner(numPartitions))
         val partitioned = rdd.repartitionAndSortWithinPartitions(partitioner)
         partitioned.mapPartitions({ its =>
@@ -50,11 +51,11 @@ object Op extends Serializable {
     def hashJoin[U, W](right: Op[(K, U)])(fn: (K, V, Iterable[U]) => Iterator[W]): Op[(K, W)] =
       HashJoinOp(op, right, fn)
 
-    def sorted(implicit ordK: Ordering[K], ordV: Ordering[V]): Op[(K, V)] =
+    def sorted(partitionComputer: PartitionComputer)(implicit ordK: Ordering[K], ordV: Ordering[V]): Op[(K, V)] =
       Transformed[(K, V), (K, V)](op, { rdd: RDD[(K, V)] =>
         // The idea here is that we put the key and the value in
         // logical key, but partition only on the left part of the key
-        val numPartitions = rdd.getNumPartitions
+        val numPartitions = partitionComputer(rdd.getNumPartitions)
         val partitioner = rdd.partitioner.getOrElse(new HashPartitioner(numPartitions))
         val keyOnlyPartioner = KeyHashPartitioner(partitioner)
         val unitValue: RDD[((K, V), Unit)] = rdd.map { kv => (kv, ()) }
@@ -65,11 +66,11 @@ object Op extends Serializable {
         }, preservesPartitioning = true) // the keys haven't changed
       })
 
-    def sortedMapGroup[U](fn: (K, Iterator[V]) => Iterator[U])(implicit ordK: Ordering[K], ordV: Ordering[V]): Op[(K, U)] =
+    def sortedMapGroup[U](partitionComputer: PartitionComputer)(fn: (K, Iterator[V]) => Iterator[U])(implicit ordK: Ordering[K], ordV: Ordering[V]): Op[(K, U)] =
       Transformed[(K, V), (K, U)](op, { rdd: RDD[(K, V)] =>
         // The idea here is that we put the key and the value in
         // logical key, but partition only on the left part of the key
-        val numPartitions = rdd.getNumPartitions
+        val numPartitions = partitionComputer(rdd.getNumPartitions)
         val partitioner = rdd.partitioner.getOrElse(new HashPartitioner(numPartitions))
         val keyOnlyPartioner = KeyHashPartitioner(partitioner)
         val unitValue: RDD[((K, V), Unit)] = rdd.map { kv => (kv, ()) }
@@ -95,14 +96,14 @@ object Op extends Serializable {
   }
 
   implicit class InvariantOp[A](val op: Op[A]) extends AnyVal {
-    def ++(that: Op[A]): Op[A] =
+    def merge(pc: PartitionComputer, that: Op[A]): Op[A] =
       op match {
         case Empty => that
         case nonEmpty =>
           that match {
             case Empty => nonEmpty
             case thatNE =>
-              Merged(nonEmpty, thatNE)
+              Merged(pc, nonEmpty, thatNE :: Nil)
           }
       }
   }
@@ -144,18 +145,30 @@ object Op extends Serializable {
         input.run(session).map { rdd => fn(widen(rdd)) })
   }
 
-  final case class Merged[A](left: Op[A], right: Op[A]) extends Op[A] {
+  final case class Merged[A](pc: PartitionComputer, left: Op[A], tail: List[Op[A]]) extends Op[A] {
     @transient private val cache = new FutureCache[SparkSession, RDD[_ <: A]]
 
     def run(session: SparkSession)(implicit ec: ExecutionContext): Future[RDD[_ <: A]] =
       cache.getOrElseUpdate(session, {
         // start running in parallel
         val lrdd = left.run(session)
-        val rrdd = right.run(session)
-        for {
-          l <- lrdd
-          r <- rrdd
-        } yield widen[A](l) ++ widen[A](r)
+        val tailRunning = tail.map(_.run(session))
+        tailRunning match {
+          case Nil => lrdd
+          case nonEmpty =>
+            // start all the upstream in parallel:
+            Future.sequence(lrdd :: nonEmpty).map { rdds =>
+              val rddAs = rdds.map(widen[A](_))
+              val merged = new UnionRDD(session.sparkContext, rddAs)
+              val partitions = merged.getNumPartitions
+              val newPartitions = pc(partitions)
+              if (newPartitions < partitions) {
+                merged.coalesce(newPartitions)
+              } else {
+                merged
+              }
+            }
+        }
       })
   }
 

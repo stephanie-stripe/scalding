@@ -15,7 +15,7 @@ def scalaBinaryVersion(scalaVersion: String) = scalaVersion match {
 }
 val algebirdVersion = "0.13.4"
 val apacheCommonsVersion = "2.2"
-val avroVersion = "1.7.4"
+val avroVersion = "1.8.2"
 val bijectionVersion = "0.9.5"
 val cascadingAvroVersion = "2.1.2"
 val catsEffectVersion = "1.1.0"
@@ -40,7 +40,6 @@ val sparkVersion = "2.4.0"
 val slf4jVersion = "1.6.6"
 val thriftVersion = "0.9.3"
 val junitVersion = "4.10"
-val macroCompatVersion = "1.1.1"
 val jlineVersion = "2.14.3"
 
 val printDependencyClasspath = taskKey[Unit]("Prints location of the dependencies")
@@ -426,8 +425,7 @@ lazy val scaldingParquet = module("parquet").settings(
     "org.scala-lang" % "scala-reflect" % scalaVersion.value,
     "com.twitter" %% "bijection-macros" % bijectionVersion,
     "com.twitter" %% "chill-bijection" % chillVersion,
-    "com.twitter.elephantbird" % "elephant-bird-core" % elephantbirdVersion % "test",
-    "org.typelevel" %% "macro-compat" % macroCompatVersion
+    "com.twitter.elephantbird" % "elephant-bird-core" % elephantbirdVersion % "test"
     ),
   addCompilerPlugin("org.scalamacros" % "paradise" % paradiseVersion cross CrossVersion.full))
   .dependsOn(scaldingCore, scaldingHadoopTest % "test", scaldingParquetFixtures % "test->test")
