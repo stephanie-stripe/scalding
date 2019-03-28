@@ -126,7 +126,7 @@ val sharedSettings = assemblySettings ++ scalariformSettings ++ Seq(
 
   // Publishing options:
   releaseCrossBuild := true,
-  releasePublishArtifactsAction := PgpKeys.publishSigned.value,
+  // releasePublishArtifactsAction := PgpKeys.publishSigned.value,
   releaseVersionBump := sbtrelease.Version.Bump.Minor, // need to tweak based on mima results
   publishMavenStyle := true,
   publishArtifact in Test := false,
