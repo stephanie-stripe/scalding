@@ -48,10 +48,10 @@ object TypedPipe extends Serializable {
      * This could be in TypedSource, but we don't want to encourage users
      * to work directly with Pipe
      */
-    case class WrappingSource[T](pipe: Pipe,
+    case class WrappingSource[T](@transient pipe: Pipe,
       fields: Fields,
       @transient localFlow: FlowDef, // FlowDef is not serializable. We shouldn't need to, but being paranoid
-      mode: Mode,
+      @transient mode: Mode,
       conv: TupleConverter[T]) extends TypedSource[T] {
 
       def converter[U >: T]: TupleConverter[U] =
